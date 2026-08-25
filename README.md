@@ -41,13 +41,13 @@ git checkout main
 git merge --ff-only dev
 git push origin main
 git tag v1.0.0
-git push origin v1.0.0
+git push origin v1.0.0   # this starts the Release workflow
 ```
 
 ## GitHub Actions
 
 - **CI** runs TypeScript check, runtime tests, and Rust tests on pushes and pull requests to `dev` and `main`.
-- **Release** builds Windows and macOS (Apple Silicon + Intel) installers. It runs on `v*` tags or from **Actions → Release → Run workflow**. Builds land on a **draft** GitHub Release named `Cursor Gateway v<version>`.
+- **Release** builds Windows and macOS (Apple Silicon + Intel) installers when you push a version tag (`v1.0.0`). Builds land on a **draft** GitHub Release named `Cursor Gateway v<version>`.
 
 macOS artifacts from CI are unsigned unless you add Apple signing secrets later. Windows NSIS/MSI builds do not need extra secrets.
 

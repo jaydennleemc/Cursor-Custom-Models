@@ -3,8 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - "v*"
-  workflow_dispatch:
+      - "v*.*.*"
 
 permissions:
   contents: write
@@ -52,8 +51,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: v__VERSION__
-          releaseName: Cursor Gateway v__VERSION__
+          tagName: ${{ github.ref_name }}
+          releaseName: Cursor Gateway ${{ github.ref_name }}
           releaseBody: See the assets to download this version and install.
           releaseDraft: true
           prerelease: false
