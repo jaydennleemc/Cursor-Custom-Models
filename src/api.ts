@@ -1,0 +1,21 @@
+import { invoke } from "@tauri-apps/api/core";
+import type { AppConfig, AppStatus, ConnectionTest, OpResult, ProxySettings } from "./types";
+
+export const getStatus = () => invoke<AppStatus>("get_status");
+export const getConfig = () => invoke<AppConfig>("get_config");
+export const saveConfig = (config: AppConfig) =>
+  invoke<string>("save_config", { config });
+export const getProxySettings = () => invoke<ProxySettings>("get_proxy_settings");
+export const saveProxySettings = (settings: ProxySettings) =>
+  invoke<string>("save_proxy_settings", { settings });
+export const startPatch = (config: AppConfig) =>
+  invoke<OpResult>("start_patch", { config });
+export const stopRestore = (force: boolean) =>
+  invoke<OpResult>("stop_restore", { force });
+export const startProxy = (settings: ProxySettings) =>
+  invoke<string>("start_proxy", { settings });
+export const stopProxy = () => invoke<string>("stop_proxy");
+export const defaultConfig = () => invoke<AppConfig>("default_config");
+export const openConfigDir = () => invoke<void>("open_config_dir");
+export const testConnection = (config: AppConfig) =>
+  invoke<ConnectionTest>("test_connection", { config });

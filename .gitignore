@@ -1,0 +1,27 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+
+# Rust / Tauri
+src-tauri/target
+src-tauri/gen/schemas
+
+# Secrets — runtime config lives in OS app-data, never commit keys
+config.json
+
+# Local reverse-engineering leftovers
+probe-*.js
+release/
+*.zip
