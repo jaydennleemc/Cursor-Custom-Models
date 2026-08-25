@@ -26,6 +26,18 @@ npm run test:rust
 npm run test:runtime
 ```
 
+## GitHub Actions
+
+- **CI** runs TypeScript check, runtime tests, and Rust tests on every push and pull request to `main`.
+- **Release** builds Windows and macOS (Apple Silicon + Intel) installers. It runs on `v*` tags or from **Actions → Release → Run workflow**. Builds land on a **draft** GitHub Release named `Cursor Gateway v<version>`.
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+macOS artifacts from CI are unsigned unless you add Apple signing secrets later. Windows NSIS/MSI builds do not need extra secrets.
+
 ## Use
 
 1. Pick a provider (OpenAI / DeepSeek / GLM / Kimi / Qwen only need an API key; Custom needs URL, model, and key).
