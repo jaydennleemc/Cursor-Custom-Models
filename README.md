@@ -47,7 +47,7 @@ git push origin v1.0.0   # this starts the Release workflow
 ## GitHub Actions
 
 - **CI** runs TypeScript check, runtime tests, and Rust tests on pushes and pull requests to `dev` and `main`.
-- **Release** builds Windows and macOS (Apple Silicon + Intel) installers when you push a version tag (`v1.0.0`). Builds land on a **draft** GitHub Release named `Cursor Gateway v<version>`.
+- **Release** builds Windows and macOS (Apple Silicon + Intel) installers when you push a version tag (`v1.0.0`). Installers are uploaded as assets on the GitHub Release `Cursor Gateway v<version>`.
 
 macOS artifacts from CI are unsigned unless you add Apple signing secrets later. Windows NSIS/MSI builds do not need extra secrets.
 
