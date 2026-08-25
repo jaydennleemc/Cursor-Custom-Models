@@ -26,15 +26,28 @@ npm run test:rust
 npm run test:runtime
 ```
 
-## GitHub Actions
+## Branches
 
-- **CI** runs TypeScript check, runtime tests, and Rust tests on every push and pull request to `main`.
-- **Release** builds Windows and macOS (Apple Silicon + Intel) installers. It runs on `v*` tags or from **Actions → Release → Run workflow**. Builds land on a **draft** GitHub Release named `Cursor Gateway v<version>`.
+- **`dev`** — default branch for day-to-day work.
+- **`main`** — release snapshots only. Merge `dev` into `main` when you ship.
 
 ```bash
+git checkout dev
+git switch -c your-change
+# open a PR into dev
+
+# ship
+git checkout main
+git merge --ff-only dev
+git push origin main
 git tag v1.0.0
 git push origin v1.0.0
 ```
+
+## GitHub Actions
+
+- **CI** runs TypeScript check, runtime tests, and Rust tests on pushes and pull requests to `dev` and `main`.
+- **Release** builds Windows and macOS (Apple Silicon + Intel) installers. It runs on `v*` tags or from **Actions → Release → Run workflow**. Builds land on a **draft** GitHub Release named `Cursor Gateway v<version>`.
 
 macOS artifacts from CI are unsigned unless you add Apple signing secrets later. Windows NSIS/MSI builds do not need extra secrets.
 
