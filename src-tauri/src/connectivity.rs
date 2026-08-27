@@ -58,6 +58,7 @@ pub fn test_connection(config: &AppConfig) -> Result<ConnectionTest> {
         return Err(AppError::msg("Enter a default model"));
     }
     let client = reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(3))
         .timeout(Duration::from_secs(8))
         .no_proxy()
         .build()
@@ -119,8 +120,8 @@ fn probe_models(
         }
     };
     let status = resp.status().as_u16();
-    let text = resp.text().unwrap_or_default();
     if !(200..300).contains(&status) {
+        let text = resp.text().unwrap_or_default();
         return Ok(ConnectionTest {
             ok: false,
             latency_ms,
@@ -129,18 +130,14 @@ fn probe_models(
             message: format!("HTTP {status}: {}", truncate(&text, 280)),
         });
     }
-    let listed = model_listed(&text, model);
-    let detail = if listed {
-        format!("Connected · {latency_ms}ms · list includes {model}")
-    } else {
-        format!("Connected · {latency_ms}ms · /models available")
-    };
+    // Status is enough. Catalogs like OpenRouter /models can be megabytes.
+    drop(resp);
     Ok(ConnectionTest {
         ok: true,
         latency_ms,
         status,
         model: model.to_string(),
-        message: detail,
+        message: format!("Connected · {latency_ms}ms · /models available"),
     })
 }
 
@@ -199,21 +196,6 @@ fn probe_chat_head(
         model: model.to_string(),
         message: format!("Connected · {latency_ms}ms · {model} · {preview}"),
     })
-}
-
-fn model_listed(body: &str, model: &str) -> bool {
-    let Ok(value) = serde_json::from_str::<Value>(body) else {
-        return false;
-    };
-    if let Some(id) = value.get("id").and_then(Value::as_str) {
-        if id == model {
-            return true;
-        }
-    }
-    let Some(data) = value.get("data").and_then(Value::as_array) else {
-        return body.contains(model);
-    };
-    data.iter().any(|item| item.get("id").and_then(Value::as_str) == Some(model))
 }
 
 fn extract_preview(body: &str) -> String {
@@ -320,7 +302,44 @@ mod tests {
         let result = test_connection(&cfg).unwrap();
         assert!(result.ok, "{}", result.message);
         assert_eq!(result.status, 200);
-        assert!(result.message.contains("hy3-free"));
+        assert!(result.message.contains("Connected"));
+    }
+
+    #[test]
+    fn models_ok_does_not_wait_for_full_body() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf);
+            let body_len = 2_000_000usize;
+            let hdr = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {body_len}\r\nConnection: close\r\n\r\n"
+            );
+            let _ = stream.write_all(hdr.as_bytes());
+            let _ = stream.write_all(&[b'x'; 64]);
+            thread::sleep(Duration::from_secs(5));
+            let _ = stream.write_all(&vec![b'x'; body_len - 64]);
+        });
+        let mut cfg = AppConfig::default();
+        cfg.base_url = format!("http://127.0.0.1:{port}/v1");
+        cfg.api_key = "sk-test".into();
+        cfg.default_model = "hy3-free".into();
+        let started = Instant::now();
+        let result = test_connection(&cfg).unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "connection test waited {:?}",
+            started.elapsed()
+        );
+        assert!(result.ok, "{}", result.message);
+        assert_eq!(result.status, 200);
     }
 
     #[test]

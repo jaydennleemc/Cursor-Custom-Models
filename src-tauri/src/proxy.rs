@@ -1,6 +1,6 @@
 use crate::error::{AppError, Result};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Mutex};
+use std::sync::{mpsc, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 use tiny_http::{Header, Method, Response, Server, StatusCode};
@@ -144,13 +144,30 @@ pub fn stop() -> Result<()> {
     Ok(())
 }
 
+fn http_client() -> std::result::Result<reqwest::blocking::Client, String> {
+    static CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
+    if let Some(c) = CLIENT.get() {
+        return Ok(c.clone());
+    }
+    let built = reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(300))
+        .pool_max_idle_per_host(8)
+        .no_proxy()
+        .build()
+        .map_err(|e| e.to_string())?;
+    Ok(CLIENT.get_or_init(|| built).clone())
+}
+
 fn run_loop(server: Server, upstream: &str, stop: std::sync::Arc<AtomicBool>) {
     for request in server.incoming_requests() {
         if stop.load(Ordering::SeqCst) {
             let _ = request.respond(Response::empty(503));
             break;
         }
-        handle(request, upstream);
+        // ponytail: one thread per request so an SSE stream does not block the next preflight
+        let upstream = upstream.to_string();
+        thread::spawn(move || handle(request, &upstream));
     }
 }
 
@@ -214,11 +231,7 @@ fn forward(
     body: Vec<u8>,
 ) -> std::result::Result<(u16, Vec<Header>, reqwest::blocking::Response), String> {
     let target = format!("{upstream}{url_path}");
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(300))
-        .no_proxy()
-        .build()
-        .map_err(|e| e.to_string())?;
+    let client = http_client()?;
     let mut builder = client.request(
         reqwest::Method::from_bytes(method.as_bytes()).map_err(|e| e.to_string())?,
         &target,
