@@ -815,6 +815,7 @@ async function runTests(T) {
     !!started25 && started25.value.callId === "call_1" &&
     started25.value.toolCall.tool.case === "readToolCall" &&
     started25.value.toolCall.tool.value.args.path === "src/a.txt" &&
+    !started25.value.toolCall.tool.value.result &&
     !!completed25 && completed25.value.callId === "call_1" &&
     completed25.value.toolCall.tool.case === "readToolCall" &&
     completed25.value.toolCall.tool.value.result instanceof ReadFileResultT &&
@@ -1019,6 +1020,7 @@ async function runTests(T) {
     !!stArgs31 && stArgs31.case === "editToolCall" &&
     stArgs31.value.args instanceof EditArgsT &&
     stArgs31.value.args.path === "out/new.txt" && stArgs31.value.args.streamContent === "HELLO" &&
+    !stArgs31.value.result &&
     !!ex31 && ex31.case === "writeArgs" && ex31.value instanceof WriteArgsT &&
     ex31.value.path === "out/new.txt" && ex31.value.fileText === "HELLO" && ex31.value.toolCallId === "call_w" &&
     !!cpTool31 && cpTool31.case === "editToolCall" &&
