@@ -40,14 +40,14 @@ git switch -c your-change
 git checkout main
 git merge --ff-only dev
 git push origin main
-git tag v1.0.1
-git push origin v1.0.1   # this starts the Release workflow
+git tag v1.0.2
+git push origin v1.0.2   # this starts the Release workflow
 ```
 
 ## GitHub Actions
 
 - **CI** runs TypeScript check, runtime tests, and Rust tests on pushes and pull requests to `dev` and `main`.
-- **Release** builds Windows and macOS (Apple Silicon + Intel) installers when you push a version tag (`v1.0.1`). Installers are uploaded as assets on the GitHub Release `Cursor Gateway v<version>`.
+- **Release** builds Windows and macOS (Apple Silicon + Intel) installers when you push a version tag (`v1.0.2`). Installers are uploaded as assets on the GitHub Release `Cursor Gateway v<version>`.
 
 macOS GitHub builds use **ad-hoc code signing** (same approach as Freeway): `codesign --sign -`, strip quarantine, then pack a DMG with `hdiutil`. No paid Apple Developer certificate is required.
 

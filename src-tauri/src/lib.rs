@@ -185,6 +185,22 @@ fn prepare_injected_config(config: &AppConfig, log: &mut Vec<String>) -> Result<
 }
 
 #[tauri::command]
+async fn open_cursor() -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(process::open_cursor)
+        .await
+        .map_err(|e| format!("Open Cursor failed: {e}"))?
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+async fn quit_cursor() -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(process::quit_cursor)
+        .await
+        .map_err(|e| format!("Quit Cursor failed: {e}"))?
+        .map_err(Into::into)
+}
+
+#[tauri::command]
 fn open_config_dir() -> Result<(), String> {
     let dir = config::config_dir_path()?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -232,6 +248,8 @@ pub fn run() {
             stop_proxy,
             default_config,
             open_config_dir,
+            open_cursor,
+            quit_cursor,
             test_connection
         ])
         .run(tauri::generate_context!())
