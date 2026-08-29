@@ -11,20 +11,25 @@ pub fn restore_install(install: &CursorInstall, force: bool, log: &mut Vec<Strin
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| target.display().to_string());
-        log.push(format!("===== {leaf} ====="));
-        match restore_one(target, force, log) {
-            Ok(true) => any = true,
-            Ok(false) => {}
-            Err(e) => log.push(format!("{leaf} FAIL: {e}")),
+        match restore_one(target, force) {
+            Ok(RestoreOne::Done) => {
+                any = true;
+                log.push(format!("{leaf}  restored"));
+            }
+            Ok(RestoreOne::NoBackup) => {}
+            Ok(RestoreOne::NeedsForce) => {
+                log.push(format!("{leaf}  skipped — enable Force restore (Cursor updated this file)"));
+            }
+            Err(e) => log.push(format!("{leaf}  failed — {e}")),
         }
     }
     match checksum::restore_product_json(&install.product_json) {
         Ok(true) => {
-            log.push("Restored product.json".into());
+            log.push("product.json  restored".into());
             any = true;
         }
-        Ok(false) => log.push("No valid product.json backup, skipped".into()),
-        Err(e) => log.push(format!("Failed to restore product.json: {e}")),
+        Ok(false) => log.push("product.json  skipped — no backup".into()),
+        Err(e) => log.push(format!("product.json  failed — {e}")),
     }
     if !any {
         return Err(AppError::msg("Nothing to restore (Cursor may not be patched yet)"));
@@ -32,28 +37,31 @@ pub fn restore_install(install: &CursorInstall, force: bool, log: &mut Vec<Strin
     Ok(())
 }
 
-fn restore_one(target: &std::path::Path, force: bool, log: &mut Vec<String>) -> Result<bool> {
+enum RestoreOne {
+    Done,
+    NoBackup,
+    NeedsForce,
+}
+
+fn restore_one(target: &std::path::Path, force: bool) -> Result<RestoreOne> {
     let bak = bak_path(target);
     if !bak.is_file() {
-        log.push("No backup, skipped".into());
-        return Ok(false);
+        return Ok(RestoreOne::NoBackup);
     }
     let current = fs::read_to_string(target)?;
     if !current.contains(MARKER) && !force {
-        log.push("Current file has no patch marker — Cursor may have updated it. Refusing to overwrite with an old backup. Check Force restore to proceed.".into());
-        return Ok(false);
+        return Ok(RestoreOne::NeedsForce);
     }
     if !bak_intact(&bak) {
         return Err(AppError::msg(format!(
-            "Backup is incomplete, restore refused: {}",
+            "backup is incomplete: {}",
             bak.display()
         )));
     }
     fs::copy(&bak, target)?;
     let restored = fs::read_to_string(target)?;
     if restored.len() < 1_000_000 || restored.contains(MARKER) {
-        return Err(AppError::msg("Restore verification failed"));
+        return Err(AppError::msg("restore verification failed"));
     }
-    log.push("Restored original file".into());
-    Ok(true)
+    Ok(RestoreOne::Done)
 }

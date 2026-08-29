@@ -31,12 +31,11 @@ const en: Dict = {
   statusPatched: "{n}/{total} files patched",
 
   start: "Start",
+  starting: "Starting…",
   stop: "Stop",
+  stopping: "Stopping…",
+  saving: "Saving…",
   forceRestore: "Force restore (overwrite after Cursor update)",
-  corsHint: "This endpoint uses the built-in CORS proxy. Keep this app running.",
-  corsOn: "Proxy :{port}",
-  corsOff: "Proxy off",
-
   log: "Log",
   logIdle: "Waiting.",
   testOk: "Connected",
@@ -165,12 +164,11 @@ const zhCN: Dict = {
   statusPatched: "{n}/{total} 个文件已打",
 
   start: "启动",
+  starting: "启动中…",
   stop: "停止",
+  stopping: "停止中…",
+  saving: "保存中…",
   forceRestore: "强制还原（Cursor 更新后覆盖）",
-  corsHint: "该上游会走内置 CORS 代理，本应用需要保持运行。",
-  corsOn: "代理 :{port}",
-  corsOff: "代理未开",
-
   log: "日志",
   logIdle: "等待操作。",
   testOk: "连接成功",
@@ -299,12 +297,11 @@ const zhTW: Dict = {
   statusPatched: "{n}/{total} 個檔案已套用",
 
   start: "啟動",
+  starting: "啟動中…",
   stop: "停止",
+  stopping: "停止中…",
+  saving: "保存中…",
   forceRestore: "強制還原（Cursor 更新後覆蓋）",
-  corsHint: "此上游會走內建 CORS 代理，請保持本應用程式開啟。",
-  corsOn: "代理 :{port}",
-  corsOff: "代理未開啟",
-
   log: "日誌",
   logIdle: "等待操作。",
   testOk: "連線成功",
