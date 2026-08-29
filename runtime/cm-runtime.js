@@ -6,6 +6,9 @@
  * Intercepts the ConnectRPC transport and forwards Chat / Cmd+K / Agent
  * requests to the user-configured OpenAI-compatible API.
  *
+ * v1.6.2: Start the upstream call as soon as the first BiDi chat request
+ *         arrives (50ms coalesce, 200ms cap) instead of waiting 800ms while
+ *         Cursor keeps the stream open for tool results.
  * v1.6.1: Passthrough system prompts — only the model is custom; no extra copy.
  *         Drop homemade role prompts and "tools callable" notes, remove
  *         behavioral title suffixes. System messages contain only data Cursor
@@ -975,15 +978,21 @@
     var isAgentRun = service.typeName === "agent.v1.AgentService" && method.name === "Run";
     var isBidi = method.kind === 3 /* MethodKind.BiDiStreaming */ || (/WithTools$/.test(method.name) && !/SSE$|Poll$|Idempotent$/.test(method.name));
 
-    // 收集 input（ServerStreaming 单条；BiDi 收集窗口 800ms / agent 上限 1024 条供工具结果回传）
+    // 收集 input（ServerStreaming 单条；BiDi 拿到首个有效请求后 50ms 放行 / agent 上限 1024 条供工具结果回传）
     var collectCap = isAgentRun ? 1024 : 64;
     var collected = [];
     var collectResolve = null;
     var collectSettled = false;
+    var bidiSettleTimer = null;
     function settleCollect() {
       if (collectSettled) return;
       collectSettled = true;
+      if (bidiSettleTimer) { clearTimeout(bidiSettleTimer); bidiSettleTimer = null; }
       if (collectResolve) collectResolve(collected.slice());
+    }
+    function scheduleBidiSettle() {
+      if (collectSettled || bidiSettleTimer) return;
+      bidiSettleTimer = setTimeout(settleCollect, 50);
     }
     var collectPromise = (async function () {
       try {
@@ -1006,6 +1015,8 @@
           // agent: 一旦收到 runRequest 立即放行(客户端可能先发心跳/prewarm, runRequest 携带完整请求)
           if (isAgentRun && m && m.message && m.message.case === "runRequest") {
             settleCollect();
+          } else if (isBidi && unwrapChatRequest(m, 0)) {
+            scheduleBidiSettle();
           }
           if (collected.length >= collectCap) break;
         }
@@ -1023,10 +1034,10 @@
         p.then(function (v) { clearTimeout(t); resolve(v); }, function () { clearTimeout(t); resolve(collected.slice()); });
       });
     }
-    // agent: 等待 runRequest 出现(立即放行)或 8s 兜底; 其他 BiDi: 800ms 窗口
+    // agent: 等待 runRequest 出现(立即放行)或 8s 兜底; 其他 BiDi: 首包后 50ms / 200ms 封顶
     var collectPhase = isAgentRun
       ? withWindow(Promise.race([collectGate, collectPromise]), 8000)
-      : (isBidi ? withWindow(collectPromise, 800) : collectPromise);
+      : (isBidi ? withWindow(Promise.race([collectGate, collectPromise]), 200) : collectPromise);
 
     var planPromise = collectPhase.then(function (list) {
       var req, meta, out;
@@ -1256,7 +1267,7 @@
               var hbT = mk(ap.heartbeatField, {});
               if (hbT) yield hbT;
             }
-            await new Promise(function (rs) { setTimeout(rs, 120); });
+            await new Promise(function (rs) { setTimeout(rs, 20); });
           }
           // toolCallCompleted(带结果回填, UI 收尾)
           var cpMsg = buildAgentToolUpdate(ap, ap.toolCompletedField, c2.id, resolved, argsObj, null);
@@ -1465,7 +1476,7 @@
               break;
             }
             if (signal && signal.aborted) break;
-            await new Promise(function (rs2) { setTimeout(rs2, 120); });
+            await new Promise(function (rs2) { setTimeout(rs2, 20); });
           }
           var resultText2 = resultMsg2
             ? chatToolResultText(resultMsg2)

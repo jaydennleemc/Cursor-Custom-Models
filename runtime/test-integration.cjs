@@ -914,7 +914,7 @@ async function runTests(T) {
     JSON.stringify(sys34.content.slice(0, 120)));
 
   // ================= Chat 界面 clientSideToolV2 工具循环 (v1.6.0) =================
-  // BiDi 收集窗口 800ms: 结果消息须在窗口关闭后才注入, 否则会落在 watermark 之前被跳过
+  // BiDi 在首个有效请求后 50ms 放行; 工具结果须在 watermark 之后到达, 否则会被跳过
   const chatBidiInput = (reqPayload, delayMs, afterMsg) => (async function* () {
     yield { request: { case: "streamUnifiedChatRequest", value: reqPayload } };
     await new Promise((rs) => setTimeout(rs, delayMs));
@@ -1093,4 +1093,20 @@ async function runTests(T) {
     c33.params.value.toolArgs instanceof StructT && c33.params.value.toolArgs.fields.url === "https://example.com" &&
     !!tool33 && tool33.tool_call_id === "cc_3" && tool33.content.includes("boom-expected"),
     JSON.stringify(chat33.map((m) => m.response && m.response.case)));
+
+  // T35: 真实 Cursor 会把 BiDi 流一直开着等工具结果。以前固定等 800ms 才打上游。
+  sseScript = [{ delta: { content: "FAST" } }];
+  let releaseHang;
+  const hang = new Promise((rs) => { releaseHang = rs; });
+  const hangingBidi = (async function* () {
+    yield { request: { case: "streamUnifiedChatRequest", value: { conversation: [{ type: 1, text: "hi" }], modelDetails: { modelName: "gpt-4" } } } };
+    await hang;
+  })();
+  const t35 = Date.now();
+  r = await wrapped.stream(svcChat, mWithTools, null, null, {}, hangingBidi);
+  const hangMsgs = await collect(r.message);
+  const dt35 = Date.now() - t35;
+  releaseHang();
+  const hangText = hangMsgs.slice(1).map((m) => m.response && m.response.value && m.response.value.text).join("");
+  T("T35 BiDi 开流不等待800ms窗口", dt35 < 400 && hangText === "FAST", dt35 + "ms " + hangText);
 }
