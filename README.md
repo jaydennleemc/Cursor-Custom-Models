@@ -40,16 +40,31 @@ git switch -c your-change
 git checkout main
 git merge --ff-only dev
 git push origin main
-git tag v1.0.0
-git push origin v1.0.0   # this starts the Release workflow
+git tag v1.0.1
+git push origin v1.0.1   # this starts the Release workflow
 ```
 
 ## GitHub Actions
 
 - **CI** runs TypeScript check, runtime tests, and Rust tests on pushes and pull requests to `dev` and `main`.
-- **Release** builds Windows and macOS (Apple Silicon + Intel) installers when you push a version tag (`v1.0.0`). Installers are uploaded as assets on the GitHub Release `Cursor Gateway v<version>`.
+- **Release** builds Windows and macOS (Apple Silicon + Intel) installers when you push a version tag (`v1.0.1`). Installers are uploaded as assets on the GitHub Release `Cursor Gateway v<version>`.
 
-macOS artifacts from CI are unsigned unless you add Apple signing secrets later. Windows NSIS/MSI builds do not need extra secrets.
+macOS DMGs are signed and notarized only when these GitHub Actions secrets are set:
+
+- `APPLE_CERTIFICATE` — base64-encoded Developer ID Application `.p12`
+- `APPLE_CERTIFICATE_PASSWORD` — password for that `.p12`
+- `APPLE_SIGNING_IDENTITY` — e.g. `Developer ID Application: Your Name (TEAMID)`
+- `APPLE_ID` — Apple ID email
+- `APPLE_PASSWORD` — [app-specific password](https://support.apple.com/en-us/102654)
+- `APPLE_TEAM_ID` — 10-character Team ID
+
+Without those secrets, Gatekeeper will block the download. Local workaround:
+
+```bash
+xattr -cr ~/Downloads/Cursor\ Gateway.app
+```
+
+Windows NSIS/MSI builds do not need extra secrets.
 
 ## Use
 

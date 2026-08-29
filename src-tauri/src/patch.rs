@@ -4,13 +4,17 @@ use crate::cursor::CursorInstall;
 use crate::error::{AppError, Result};
 use regex::Regex;
 use std::fs;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::sync::OnceLock;
 
 pub const MARKER: &str = "__CURSOR_CM__";
 const PLACEHOLDER: &str = "__CM_CONFIG_PLACEHOLDER__";
 const RUNTIME: &str = include_str!("../../runtime/cm-runtime.js");
 const MIN_BAK_BYTES: u64 = 1_000_000;
+/// Start of the appended runtime. Used to refresh config without rewriting
+/// the whole workbench bundle (tens of MB).
+const INJECT_HEAD: &[u8] = b" * Cursor Custom Models Runtime v";
 
 const TRANSPORT_RE: &str = r#"async transport\(\)\{try\{return await ([A-Za-z_$][\w$]*)\(this\._provider,AbortSignal\.timeout\(([A-Za-z_$][\w$]*)\)\)\}catch\{throw new Error\("No Connect transport provider registered\."\)\}\}"#;
 const EXT_RE: &str = r#"registerConnectTransportProvider\(([A-Za-z_$][\w$]*)\)\{this\.([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*),this\._proxy\.\$registerAiConnectTransportProvider\(\)\}"#;
@@ -31,10 +35,19 @@ pub fn bak_intact(path: &Path) -> bool {
     if meta.len() < MIN_BAK_BYTES {
         return false;
     }
-    let Ok(text) = fs::read_to_string(path) else {
+    let Ok(mut file) = fs::File::open(path) else {
         return false;
     };
-    text.contains("async transport(") || text.contains("registerConnectTransportProvider")
+    let mut buf = [0u8; 256 * 1024];
+    let Ok(n) = file.read(&mut buf) else {
+        return false;
+    };
+    let head = &buf[..n];
+    memmem(head, b"async transport(") || memmem(head, b"registerConnectTransportProvider")
+}
+
+fn memmem(hay: &[u8], needle: &[u8]) -> bool {
+    hay.windows(needle.len()).any(|w| w == needle)
 }
 
 pub fn file_is_patched(path: &Path) -> bool {
@@ -66,8 +79,19 @@ pub fn inject_runtime(config_json: &str) -> Result<String> {
 
 pub struct AnchorResult {
     pub patched: bool,
+    #[allow(dead_code)]
     pub detail: String,
     pub content: String,
+}
+
+fn ext_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(EXT_RE).expect("ext regex"))
+}
+
+fn transport_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(TRANSPORT_RE).expect("transport regex"))
 }
 
 pub fn apply_anchors(content: &str) -> AnchorResult {
@@ -75,44 +99,35 @@ pub fn apply_anchors(content: &str) -> AnchorResult {
     let mut detail = String::new();
     let mut patched = false;
 
-    let ext_re = Regex::new(EXT_RE).expect("ext regex");
-    let ext_count = ext_re
-        .captures_iter(&text)
-        .filter(|caps| caps.get(1).map(|m| m.as_str()) == caps.get(3).map(|m| m.as_str()))
-        .count();
-    if ext_count > 0 {
-        text = ext_re
-            .replace_all(&text, |caps: &regex::Captures| {
-                if &caps[1] != &caps[3] {
-                    return caps.get(0).map(|m| m.as_str().to_string()).unwrap_or_default();
-                }
-                EXT_TEMPLATE
-                    .replace("__ARG__", &caps[1])
-                    .replace("__FIELD__", &caps[2])
-            })
-            .into_owned();
+    let ext_out = ext_re().replace_all(&text, |caps: &regex::Captures| {
+        if &caps[1] != &caps[3] {
+            return caps.get(0).map(|m| m.as_str().to_string()).unwrap_or_default();
+        }
+        EXT_TEMPLATE
+            .replace("__ARG__", &caps[1])
+            .replace("__FIELD__", &caps[2])
+    });
+    if ext_out.as_ref() != text.as_str() {
+        text = ext_out.into_owned();
         patched = true;
-        detail.push_str(&format!("ext-provider x{ext_count}; "));
+        detail.push_str("ext-provider; ");
     }
 
-    let transport_re = Regex::new(TRANSPORT_RE).expect("transport regex");
-    let t_count = transport_re.find_iter(&text).count();
-    if t_count > 0 {
-        text = transport_re
-            .replace_all(&text, |caps: &regex::Captures| {
-                format!(
-                    "async transport(){{try{{const __cmT=await {}(this._provider,AbortSignal.timeout({}));try{{return(globalThis.__CURSOR_CM__&&globalThis.__CURSOR_CM__.wrap)?globalThis.__CURSOR_CM__.wrap(__cmT):__cmT}}catch(__cmE){{return __cmT}}}}catch{{throw new Error(\"No Connect transport provider registered.\")}}}}",
-                    &caps[1],
-                    &caps[2]
-                )
-            })
-            .into_owned();
+    let t_out = transport_re().replace_all(&text, |caps: &regex::Captures| {
+        format!(
+            "async transport(){{try{{const __cmT=await {}(this._provider,AbortSignal.timeout({}));try{{return(globalThis.__CURSOR_CM__&&globalThis.__CURSOR_CM__.wrap)?globalThis.__CURSOR_CM__.wrap(__cmT):__cmT}}catch(__cmE){{return __cmT}}}}catch{{throw new Error(\"No Connect transport provider registered.\")}}}}",
+            &caps[1],
+            &caps[2]
+        )
+    });
+    if t_out.as_ref() != text.as_str() {
+        text = t_out.into_owned();
         patched = true;
-        detail.push_str(&format!("transport x{t_count}; "));
+        detail.push_str("transport; ");
     } else if text.contains(ANCHOR_DESKTOP) {
         text = text.replace(ANCHOR_DESKTOP, ANCHOR_DESKTOP_REP);
         patched = true;
-        detail.push_str("desktop-exact x1; ");
+        detail.push_str("desktop-exact; ");
     }
 
     AnchorResult {
@@ -120,15 +135,6 @@ pub fn apply_anchors(content: &str) -> AnchorResult {
         detail,
         content: text,
     }
-}
-
-fn node_check(path: &Path) -> Option<bool> {
-    Command::new("node")
-        .arg("--check")
-        .arg(path)
-        .status()
-        .ok()
-        .map(|s| s.success())
 }
 
 pub fn patch_install(install: &CursorInstall, config: &AppConfig, log: &mut Vec<String>) -> Result<()> {
@@ -139,77 +145,104 @@ pub fn patch_install(install: &CursorInstall, config: &AppConfig, log: &mut Vec<
 
     let mut any_ok = false;
     for target in &install.targets {
-        let leaf = target
-            .file_name()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| target.display().to_string());
-        log.push(format!("===== {leaf} ====="));
-        match patch_one(target, &runtime, log) {
+        let leaf = file_leaf(target);
+        match patch_one(target, &runtime) {
             Ok(()) => {
                 any_ok = true;
-                log.push(format!("{leaf} OK"));
+                log.push(format!("{leaf}  patched"));
             }
-            Err(e) => log.push(format!("{leaf} FAIL: {e}")),
+            Err(e) => log.push(format!("{leaf}  failed — {e}")),
         }
     }
     if !any_ok {
         return Err(AppError::msg("No files were patched"));
     }
     match checksum::update_product_json(&install.product_json, &install.out_dir, &install.targets) {
-        Ok(true) => log.push("Updated product.json checksums".into()),
-        Ok(false) => log.push("Did not change product.json (missing file or no matches)".into()),
-        Err(e) => log.push(format!("Checksum update failed: {e}")),
+        Ok(true) => log.push("product.json  checksums updated".into()),
+        Ok(false) => log.push("product.json  unchanged".into()),
+        Err(e) => log.push(format!("product.json  failed — {e}")),
     }
     Ok(())
 }
 
-fn patch_one(target: &Path, runtime: &str, log: &mut Vec<String>) -> Result<()> {
+fn file_leaf(path: &Path) -> String {
+    path.file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string())
+}
+
+fn patch_one(target: &Path, runtime: &str) -> Result<()> {
+    if file_is_patched(target) && replace_runtime_tail(target, runtime)? {
+        return Ok(());
+    }
+
     let bak = bak_path(target);
     let mut content = fs::read_to_string(target)?;
     if content.contains(MARKER) {
         if !bak_intact(&bak) {
             return Err(AppError::msg(format!(
-                "Already patched but backup is invalid, skipped: {}",
+                "already patched but backup is invalid: {}",
                 bak.display()
             )));
         }
         fs::copy(&bak, target)?;
         content = fs::read_to_string(target)?;
         if content.len() < MIN_BAK_BYTES as usize {
-            return Err(AppError::msg("File is invalid after restore from backup"));
+            return Err(AppError::msg("file is invalid after restore from backup"));
         }
-        log.push("Restored from backup (idempotent)".into());
     }
 
     let applied = apply_anchors(&content);
     if !applied.patched {
-        return Err(AppError::msg("Anchor not found; file unchanged"));
+        return Err(AppError::msg("anchor not found; file unchanged"));
     }
-    log.push(format!("Anchor replaced: {}", applied.detail));
-
-    let patched = format!("{}\n{}\n", applied.content, runtime);
 
     if !content.contains(MARKER) {
         fs::write(&bak, &content)?;
-        log.push("Created backup".into());
     }
 
-    fs::write(target, &patched)?;
-    log.push("Patch written".into());
+    fs::write(target, format!("{}\n{runtime}\n", applied.content))?;
+    Ok(())
+}
 
-    match node_check(target) {
-        None => log.push("node not found, skipped syntax check".into()),
-        Some(true) => log.push("Syntax check passed".into()),
-        Some(false) => {
-            if bak.exists() {
-                fs::copy(&bak, target)?;
-                log.push("Syntax check failed, rolled back".into());
-                return Err(AppError::msg("Syntax check failed, rolled back"));
+fn replace_runtime_tail(path: &Path, runtime: &str) -> Result<bool> {
+    let mut file = fs::OpenOptions::new().read(true).write(true).open(path)?;
+    let len = file.metadata()?.len();
+    if len < INJECT_HEAD.len() as u64 {
+        return Ok(false);
+    }
+    let window = (512 * 1024).min(len);
+    file.seek(SeekFrom::End(-(window as i64)))?;
+    let mut buf = vec![0u8; window as usize];
+    file.read_exact(&mut buf)?;
+    let Some(hit) = buf.windows(INJECT_HEAD.len()).position(|w| w == INJECT_HEAD) else {
+        return Ok(false);
+    };
+    // Walk back over the banner line and the `/* ===` line, plus the separator newline.
+    let mut rel = hit;
+    let mut lines = 0u8;
+    while rel > 0 {
+        rel -= 1;
+        if buf[rel] == b'\n' {
+            lines += 1;
+            if lines == 2 {
+                break;
             }
-            return Err(AppError::msg("Syntax check failed and no backup to roll back"));
         }
     }
-    Ok(())
+    if buf.get(rel) == Some(&b'\n') {
+        rel += 1;
+    }
+    while rel > 0 && (buf[rel - 1] == b'\n' || buf[rel - 1] == b'\r') {
+        rel -= 1;
+    }
+    let keep = len - window + rel as u64;
+    file.set_len(keep)?;
+    file.seek(SeekFrom::Start(keep))?;
+    file.write_all(b"\n")?;
+    file.write_all(runtime.as_bytes())?;
+    file.write_all(b"\n")?;
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -264,5 +297,24 @@ mod tests {
         let out = apply_anchors("hello world");
         assert!(!out.patched);
         assert_eq!(out.content, "hello world");
+    }
+
+    #[test]
+    fn replace_runtime_tail_updates_config_without_full_rewrite() {
+        let dir = std::env::temp_dir().join(format!("ccm-rt-{}", std::process::id()));
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("workbench.js");
+        let original = "async transport(){return 1}\n";
+        let runtime_a = inject_runtime(r#"{"enabled":true,"tag":"a"}"#).unwrap();
+        let runtime_b = inject_runtime(r#"{"enabled":true,"tag":"b"}"#).unwrap();
+        fs::write(&path, format!("{original}\n{runtime_a}\n")).unwrap();
+        assert!(file_is_patched(&path));
+        assert!(replace_runtime_tail(&path, &runtime_b).unwrap());
+        let out = fs::read_to_string(&path).unwrap();
+        assert!(out.starts_with("async transport(){return 1}"));
+        assert!(out.contains(r#""tag":"b""#));
+        assert!(!out.contains(r#""tag":"a""#));
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_dir(&dir);
     }
 }
