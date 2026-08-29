@@ -21,6 +21,13 @@ const EXT_RE: &str = r#"registerConnectTransportProvider\(([A-Za-z_$][\w$]*)\)\{
 const ANCHOR_DESKTOP: &str = r#"async transport(){try{return await gb(this._provider,AbortSignal.timeout(D3u))}catch{throw new Error("No Connect transport provider registered.")}}"#;
 const ANCHOR_DESKTOP_REP: &str = r#"async transport(){try{const __cmT=await gb(this._provider,AbortSignal.timeout(D3u));try{return(globalThis.__CURSOR_CM__&&globalThis.__CURSOR_CM__.wrap)?globalThis.__CURSOR_CM__.wrap(__cmT):__cmT}catch(__cmE){return __cmT}}catch{throw new Error("No Connect transport provider registered.")}}"#;
 const EXT_TEMPLATE: &str = r#"registerConnectTransportProvider(__ARG__){this.__FIELD__=(function(t){if(!t||typeof Proxy==="undefined")return t;return new Proxy(t,{get:function(target,prop){if(prop==="unary"||prop==="stream"){return function(){var cm=globalThis.__CURSOR_CM__;if(cm&&cm.wrap){try{return cm.wrap(target)[prop].apply(target,arguments)}catch(e){}}var v=target[prop];return v.apply(target,arguments)};}var v=target[prop];return typeof v==="function"?v.bind(target):v;}});})(__ARG__),this._proxy.$registerAiConnectTransportProvider()}"#;
+/// Free-plan helper that returns true only for confirmed FREE + no team.
+/// Cursor then locks the composer model picker (`locked_picker`).
+const CONFIRMED_FREE_RE: &str = r#"(\{membershipType:[A-Za-z_$][\w$]*,hasResolvedTeamMembership:[A-Za-z_$][\w$]*,teamId:[A-Za-z_$][\w$]*\}\)\{)return [A-Za-z_$][\w$]*===[A-Za-z_$][\w$]*\.FREE&&[A-Za-z_$][\w$]*&&[A-Za-z_$][\w$]*===void 0\}"#;
+/// Full-picker gate: false while a free user is still "potentially locked".
+const PICKER_ALLOW_RE: &str = r#"(\{isAuthSettling:[A-Za-z_$][\w$]*,isPotentiallyFreeUserModelPickerLocked:[A-Za-z_$][\w$]*,isFreeUserMembershipConfirmedToAllowFullPicker:[A-Za-z_$][\w$]*,isRestrictedModelPicker:[A-Za-z_$][\w$]*\}\)\{)return![A-Za-z_$][\w$]*&&![A-Za-z_$][\w$]*&&\(![A-Za-z_$][\w$]*\|\|[A-Za-z_$][\w$]*\)\}"#;
+/// Policy mapper: eligible free users get `{kind:"locked"}` instead of the list.
+const LOCKED_PICKER_KIND_RE: &str = r#"[A-Za-z_$][\w$]*==="locked_picker"\?\{kind:"locked",onUpgradeClick:[A-Za-z_$][\w$]*\}:[A-Za-z_$][\w$]*==="grayed_models"\?\{kind:"models-disabled",onUpgradeClick:[A-Za-z_$][\w$]*\}:\{kind:"full"\}"#;
 
 pub fn bak_path(target: &Path) -> PathBuf {
     let mut s = target.as_os_str().to_os_string();
@@ -117,6 +124,51 @@ fn transport_re() -> &'static Regex {
     RE.get_or_init(|| Regex::new(TRANSPORT_RE).expect("transport regex"))
 }
 
+fn confirmed_free_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(CONFIRMED_FREE_RE).expect("confirmed-free regex"))
+}
+
+fn picker_allow_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(PICKER_ALLOW_RE).expect("picker-allow regex"))
+}
+
+fn locked_picker_kind_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(LOCKED_PICKER_KIND_RE).expect("locked-picker regex"))
+}
+
+/// Disable Cursor's free-plan model-picker lock (stable property names, minified locals).
+fn unlock_model_picker(content: &str) -> (String, bool) {
+    let mut text = content.to_string();
+    let mut changed = false;
+
+    let next = confirmed_free_re().replace_all(&text, |caps: &regex::Captures| {
+        format!("{}return!1}}", &caps[1])
+    });
+    if next.as_ref() != text.as_str() {
+        text = next.into_owned();
+        changed = true;
+    }
+
+    let next = picker_allow_re().replace_all(&text, |caps: &regex::Captures| {
+        format!("{}return!0}}", &caps[1])
+    });
+    if next.as_ref() != text.as_str() {
+        text = next.into_owned();
+        changed = true;
+    }
+
+    let next = locked_picker_kind_re().replace_all(&text, r#"{kind:"full"}"#);
+    if next.as_ref() != text.as_str() {
+        text = next.into_owned();
+        changed = true;
+    }
+
+    (text, changed)
+}
+
 pub fn apply_anchors(content: &str) -> AnchorResult {
     let mut text = content.to_string();
     let mut detail = String::new();
@@ -151,6 +203,13 @@ pub fn apply_anchors(content: &str) -> AnchorResult {
         text = text.replace(ANCHOR_DESKTOP, ANCHOR_DESKTOP_REP);
         patched = true;
         detail.push_str("desktop-exact; ");
+    }
+
+    let (unlocked, picker) = unlock_model_picker(&text);
+    if picker {
+        text = unlocked;
+        patched = true;
+        detail.push_str("model-picker; ");
     }
 
     AnchorResult {
@@ -195,8 +254,15 @@ fn file_leaf(path: &Path) -> String {
 }
 
 fn patch_one(target: &Path, runtime: &str) -> Result<()> {
-    if file_is_patched(target) && replace_runtime_tail(target, runtime)? {
-        return Ok(());
+    if file_is_patched(target) {
+        let content = fs::read_to_string(target)?;
+        let (next, unlocked) = unlock_model_picker(&content);
+        if unlocked {
+            fs::write(target, next)?;
+        }
+        if replace_runtime_tail(target, runtime)? {
+            return Ok(());
+        }
     }
 
     let bak = bak_path(target);
@@ -320,6 +386,42 @@ mod tests {
         let out = apply_anchors("hello world");
         assert!(!out.patched);
         assert_eq!(out.content, "hello world");
+    }
+
+    #[test]
+    fn free_plan_model_picker_is_unlocked() {
+        let src = concat!(
+            r#"function dVv({membershipType:e,hasResolvedTeamMembership:t,teamId:n}){return e===yr.FREE&&t&&n===void 0}"#,
+            r#"function pVv({isAuthSettling:e,isPotentiallyFreeUserModelPickerLocked:t,isFreeUserMembershipConfirmedToAllowFullPicker:n,isRestrictedModelPicker:i}){return!e&&!i&&(!t||n)}"#,
+            r#"function JGv({allocation:e,eligible:t,onUpgradeClick:n}){return t?e==="locked_picker"?{kind:"locked",onUpgradeClick:n}:e==="grayed_models"?{kind:"models-disabled",onUpgradeClick:n}:{kind:"full"}:{kind:"full"}}"#,
+        );
+        let out = apply_anchors(src);
+        assert!(out.patched);
+        assert!(out.detail.contains("model-picker"));
+        assert!(out.content.contains("teamId:n}){return!1}"));
+        assert!(out.content.contains("isRestrictedModelPicker:i}){return!0}"));
+        assert!(out.content.contains(r#"{return t?{kind:"full"}:{kind:"full"}}"#));
+        assert!(!out.content.contains("locked_picker"));
+        assert!(!out.content.contains("yr.FREE&&t&&n===void 0"));
+        // Second apply is a no-op (idempotent).
+        let again = apply_anchors(&out.content);
+        assert!(!again.patched);
+        assert_eq!(again.content, out.content);
+    }
+
+    #[test]
+    fn free_plan_model_picker_accepts_glass_minified_names() {
+        let src = concat!(
+            r#"function x({membershipType:t,hasResolvedTeamMembership:e,teamId:n}){return t===ds.FREE&&e&&n===void 0}"#,
+            r#"{isAuthSettling:t,isPotentiallyFreeUserModelPickerLocked:e,isFreeUserMembershipConfirmedToAllowFullPicker:n,isRestrictedModelPicker:i}){return!t&&!i&&(!e||n)}"#,
+            r#"t==="locked_picker"?{kind:"locked",onUpgradeClick:n}:t==="grayed_models"?{kind:"models-disabled",onUpgradeClick:n}:{kind:"full"}"#,
+        );
+        let out = apply_anchors(src);
+        assert!(out.patched);
+        assert!(out.content.contains("teamId:n}){return!1}"));
+        assert!(out.content.contains("isRestrictedModelPicker:i}){return!0}"));
+        assert!(out.content.contains(r#"{kind:"full"}"#));
+        assert!(!out.content.contains("locked_picker"));
     }
 
     #[test]

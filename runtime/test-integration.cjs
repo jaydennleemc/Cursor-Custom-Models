@@ -816,6 +816,9 @@ async function runTests(T) {
     started25.value.toolCall.tool.case === "readToolCall" &&
     started25.value.toolCall.tool.value.args.path === "src/a.txt" &&
     !!completed25 && completed25.value.callId === "call_1" &&
+    completed25.value.toolCall.tool.case === "readToolCall" &&
+    completed25.value.toolCall.tool.value.result instanceof ReadFileResultT &&
+    completed25.value.toolCall.tool.value.result.content === "FILE-CONTENT-X" &&
     text25 === "文件内容是X" && turns25 === 1 &&
     Array.isArray(body1.tools) && body1.tools.length === 8 &&
     !!asstMsg && asstMsg.tool_calls[0].function.name === "read_file" &&
@@ -833,9 +836,12 @@ async function runTests(T) {
   const toInners = (await collect(r.message)).map(agentInner);
   const toText = toInners.filter((x) => x && x.case === "textDelta").map((x) => x.value.text).join("");
   const toToolMsg = lastRequestBody.messages.find((m) => m.role === "tool");
+  const completed26 = toInners.find((x) => x && x.case === "toolCallCompleted");
   T("T26 agent工具超时降级(不中断)",
     toText === "降级完成" &&
     !!toToolMsg && /timed out/.test(toToolMsg.content) &&
+    !!completed26 && completed26.value.toolCall.tool.case === "readToolCall" &&
+    !!completed26.value.toolCall.tool.value.result &&
     (Date.now() - t0) >= 200 && (Date.now() - t0) < 5000,
     JSON.stringify(toInners.map((x) => x && x.case)));
 
@@ -1001,9 +1007,11 @@ async function runTests(T) {
   const srv31 = await collect(r.message);
   const inners31 = srv31.map(agentInner);
   const started31 = inners31.find((x) => x && x.case === "toolCallStarted");
+  const completed31 = inners31.find((x) => x && x.case === "toolCallCompleted");
   const execMsg31 = srv31.find((m) => m.message && m.message.case === "execServerMessage");
   const ex31 = execMsg31 && execMsg31.message.value.message;
   const stArgs31 = started31 && started31.value.toolCall.tool;
+  const cpTool31 = completed31 && completed31.value.toolCall.tool;
   const text31 = inners31.filter((x) => x && x.case === "textDelta").map((x) => x.value.text).join("");
   const body31b = requestBodies[b31 + 1] || {};
   const tool31 = body31b.messages && body31b.messages.find((m) => m.role === "tool");
@@ -1013,6 +1021,9 @@ async function runTests(T) {
     stArgs31.value.args.path === "out/new.txt" && stArgs31.value.args.streamContent === "HELLO" &&
     !!ex31 && ex31.case === "writeArgs" && ex31.value instanceof WriteArgsT &&
     ex31.value.path === "out/new.txt" && ex31.value.fileText === "HELLO" && ex31.value.toolCallId === "call_w" &&
+    !!cpTool31 && cpTool31.case === "editToolCall" &&
+    cpTool31.value.result instanceof WriteResultT &&
+    cpTool31.value.result.message === "WROTE-OK" &&
     text31 === "写入完成" &&
     !!tool31 && tool31.tool_call_id === "call_w" && tool31.content.includes("WROTE-OK"),
     JSON.stringify(inners31.map((x) => x && x.case)) + "|" + String(ex31 && ex31.case));
@@ -1041,7 +1052,9 @@ async function runTests(T) {
   const srv32 = await collect(r.message);
   const inners32 = srv32.map(agentInner);
   const started32 = inners32.find((x) => x && x.case === "toolCallStarted");
+  const completed32 = inners32.find((x) => x && x.case === "toolCallCompleted");
   const tc32 = started32 && started32.value.toolCall.tool;
+  const cp32 = completed32 && completed32.value.toolCall.tool;
   const mcpArgs32 = tc32 && tc32.case === "mcpToolCall" ? tc32.value.args : null;
   const execMsg32 = srv32.find((m) => m.message && m.message.case === "execServerMessage");
   const ex32 = execMsg32 && execMsg32.message.value.message;
@@ -1059,6 +1072,8 @@ async function runTests(T) {
     mcpArgs32.toolName === "browser_navigate" && mcpArgs32.toolCallId === "call_m" &&
     !!mcpArgs32.args && mcpArgs32.args.url instanceof ValueT && mcpArgs32.args.url.jsonValue === "https://example.com" &&
     !!ex32 && ex32.case === "mcpArgs" && ex32.value instanceof McpArgsT && ex32.value.args.url instanceof ValueT &&
+    !!cp32 && cp32.case === "mcpToolCall" &&
+    cp32.value.result instanceof McpResultT && cp32.value.result.content === "NAV-OK" &&
     text32 === "导航完成" &&
     !!tool32 && tool32.tool_call_id === "call_m" && tool32.content.includes("NAV-OK"),
     JSON.stringify(inners32.map((x) => x && x.case)) + "|" + String(ex32 && ex32.case));
