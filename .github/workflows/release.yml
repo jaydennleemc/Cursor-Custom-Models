@@ -47,28 +47,12 @@ jobs:
 
       - run: npm ci
 
-      - name: macOS signing identity
-        if: runner.os == 'macOS'
-        env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_SIGNING_IDENTITY_SECRET: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-        run: |
-          if [ -n "$APPLE_CERTIFICATE" ]; then
-            echo "APPLE_SIGNING_IDENTITY=$APPLE_SIGNING_IDENTITY_SECRET" >> "$GITHUB_ENV"
-          else
-            # Same as freeway-desktop: ad-hoc sign without a paid Developer ID.
-            echo "APPLE_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
-          fi
-
+      # Do not pass empty APPLE_CERTIFICATE: Tauri still tries `security import` and fails.
+      # Same as freeway-desktop: ad-hoc identity "-" and no keychain cert.
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && '-' || '' }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: Cursor Gateway ${{ github.ref_name }}
@@ -78,21 +62,15 @@ jobs:
           args: ${{ matrix.args }}
 
       # freeway-desktop: codesign --sign - , strip quarantine, then hdiutil DMG.
-      # Tauri's default unsigned DMG is what Gatekeeper calls "damaged".
       - name: Ad-hoc sign and rebuild macOS DMG
         if: runner.os == 'macOS'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          if [ -n "$APPLE_CERTIFICATE" ]; then
-            echo "Developer ID certificate present; keeping Tauri-signed DMG"
-            exit 0
-          fi
 
-          APP="$(find src-tauri/target -path '*/bundle/macos/*.app' -type d | head -1)"
+          APP="$(find src-tauri/target -type d -name '*.app' | grep '/bundle/macos/' | head -1)"
           if [ -z "$APP" ] || [ ! -d "$APP" ]; then
             echo "❌ .app not found under src-tauri/target/**/bundle/macos"
             find src-tauri/target -path '*/bundle/macos/*' -maxdepth 3 | head -50 || true
