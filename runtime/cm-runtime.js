@@ -6,6 +6,8 @@
  * Intercepts the ConnectRPC transport and forwards Chat / Cmd+K / Agent
  * requests to the user-configured OpenAI-compatible API.
  *
+ * v1.6.3: Agent toolCallCompleted now attaches the exec result (and a stub on
+ *         timeout) so Cursor can leave the "Editing …" spinner.
  * v1.6.2: Start the upstream call as soon as the first BiDi chat request
  *         arrives (50ms coalesce, 200ms cap) instead of waiting 800ms while
  *         Cursor keeps the stream open for tool results.
@@ -781,9 +783,17 @@
       }
       var callPartial = {};
       if (argsF) setField(callPartial, argsF, argsT ? new argsT(argsPartial) : argsPartial);
-      if (resultMsg) {
-        var resF = findFieldDeep(CallT, "result");
-        if (resF) setField(callPartial, resF, resultMsg);
+      // toolCallCompleted 必须带 result: Cursor Agent UI 靠它结束 "Editing …"
+      // 超时/客户端未回传时也给同类型空结果, 避免一直转圈
+      var resF = findFieldDeep(CallT, "result");
+      if (resF) {
+        var payload = resultMsg || null;
+        if (!payload && resF.T) {
+          try { payload = new resF.T({}); } catch (eStub) { payload = null; }
+        } else if (payload && resF.T && !(payload instanceof resF.T)) {
+          try { payload = new resF.T(payload); } catch (eWrap) { /* keep original */ }
+        }
+        if (payload) setField(callPartial, resF, payload);
       }
       var tcPartial = {};
       setField(tcPartial, caseF, new CallT(callPartial));
@@ -1269,8 +1279,8 @@
             }
             await new Promise(function (rs) { setTimeout(rs, 20); });
           }
-          // toolCallCompleted(带结果回填, UI 收尾)
-          var cpMsg = buildAgentToolUpdate(ap, ap.toolCompletedField, c2.id, resolved, argsObj, null);
+          // toolCallCompleted(带结果回填, UI 收尾 — 缺 result 时 Editing 不会结束)
+          var cpMsg = buildAgentToolUpdate(ap, ap.toolCompletedField, c2.id, resolved, argsObj, resultMsg);
           if (cpMsg) yield cpMsg;
           var resultText = resultMsg
             ? serializeToolResult(resultMsg).slice(0, 60000)
