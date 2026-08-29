@@ -49,20 +49,23 @@ git push origin v1.0.1   # this starts the Release workflow
 - **CI** runs TypeScript check, runtime tests, and Rust tests on pushes and pull requests to `dev` and `main`.
 - **Release** builds Windows and macOS (Apple Silicon + Intel) installers when you push a version tag (`v1.0.1`). Installers are uploaded as assets on the GitHub Release `Cursor Gateway v<version>`.
 
-macOS DMGs are signed and notarized only when these GitHub Actions secrets are set:
+macOS GitHub builds use **ad-hoc code signing** (same approach as Freeway): `codesign --sign -`, strip quarantine, then pack a DMG with `hdiutil`. No paid Apple Developer certificate is required.
 
-- `APPLE_CERTIFICATE` — base64-encoded Developer ID Application `.p12`
-- `APPLE_CERTIFICATE_PASSWORD` — password for that `.p12`
-- `APPLE_SIGNING_IDENTITY` — e.g. `Developer ID Application: Your Name (TEAMID)`
-- `APPLE_ID` — Apple ID email
-- `APPLE_PASSWORD` — [app-specific password](https://support.apple.com/en-us/102654)
-- `APPLE_TEAM_ID` — 10-character Team ID
-
-Without those secrets, Gatekeeper will block the download. Local workaround:
+First launch on a fresh Mac may still show a security prompt: **right-click the app → Open → Open**. If macOS says the app is damaged:
 
 ```bash
-xattr -cr ~/Downloads/Cursor\ Gateway.app
+xattr -cr "/Applications/Cursor Gateway.app"
+open "/Applications/Cursor Gateway.app"
 ```
+
+Optional Developer ID + notarization (double-click with no prompt) if you later add these secrets:
+
+- `APPLE_CERTIFICATE` — base64-encoded Developer ID Application `.p12`
+- `APPLE_CERTIFICATE_PASSWORD`
+- `APPLE_SIGNING_IDENTITY`
+- `APPLE_ID`
+- `APPLE_PASSWORD` — [app-specific password](https://support.apple.com/en-us/102654)
+- `APPLE_TEAM_ID`
 
 Windows NSIS/MSI builds do not need extra secrets.
 

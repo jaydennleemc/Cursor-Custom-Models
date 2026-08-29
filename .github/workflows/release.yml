@@ -47,13 +47,17 @@ jobs:
 
       - run: npm ci
 
-      - name: Warn if macOS signing secrets are missing
+      - name: macOS signing identity
         if: runner.os == 'macOS'
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_SIGNING_IDENTITY_SECRET: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
-          if [ -z "$APPLE_CERTIFICATE" ]; then
-            echo "::warning::APPLE_CERTIFICATE is not set. The DMG will be unsigned and Gatekeeper will treat it as harmful."
+          if [ -n "$APPLE_CERTIFICATE" ]; then
+            echo "APPLE_SIGNING_IDENTITY=$APPLE_SIGNING_IDENTITY_SECRET" >> "$GITHUB_ENV"
+          else
+            # Same as freeway-desktop: ad-hoc sign without a paid Developer ID.
+            echo "APPLE_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
           fi
 
       - uses: tauri-apps/tauri-action@v0
@@ -61,7 +65,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -72,3 +76,66 @@ jobs:
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
+
+      # freeway-desktop: codesign --sign - , strip quarantine, then hdiutil DMG.
+      # Tauri's default unsigned DMG is what Gatekeeper calls "damaged".
+      - name: Ad-hoc sign and rebuild macOS DMG
+        if: runner.os == 'macOS'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ -n "$APPLE_CERTIFICATE" ]; then
+            echo "Developer ID certificate present; keeping Tauri-signed DMG"
+            exit 0
+          fi
+
+          APP="$(find src-tauri/target -path '*/bundle/macos/*.app' -type d | head -1)"
+          if [ -z "$APP" ] || [ ! -d "$APP" ]; then
+            echo "❌ .app not found under src-tauri/target/**/bundle/macos"
+            find src-tauri/target -path '*/bundle/macos/*' -maxdepth 3 | head -50 || true
+            exit 1
+          fi
+          echo "Using app: $APP"
+
+          codesign --force --deep --sign - "$APP"
+          codesign --verify --verbose=2 "$APP"
+          xattr -cr "$APP"
+
+          VERSION=$(node -p "require('./package.json').version")
+          ARCH="aarch64"
+          case "${{ matrix.args }}" in
+            *x86_64*) ARCH="x86_64" ;;
+          esac
+
+          mkdir -p dist-release
+          STAGING="dmg-staging"
+          rm -rf "$STAGING"
+          mkdir -p "$STAGING"
+          cp -R "$APP" "$STAGING/"
+          xattr -cr "$STAGING"
+
+          DMG="dist-release/Cursor-Gateway-${VERSION}-${ARCH}.dmg"
+          rm -f "$DMG"
+          hdiutil create \
+            -volname "Cursor Gateway" \
+            -fs HFS+ \
+            -srcfolder "$STAGING" \
+            -ov -format UDBZ \
+            "$DMG"
+
+          ZIP="dist-release/Cursor-Gateway-${VERSION}-${ARCH}.zip"
+          rm -f "$ZIP"
+          ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
+
+          ls -lh dist-release/
+
+          gh release upload "$TAG" "$DMG" "$ZIP" --clobber
+
+          # Drop Tauri's original DMG (spaces in the filename; unsigned/quarantined).
+          TAURI_DMG="$(find src-tauri/target -path '*/bundle/dmg/*.dmg' | head -1 || true)"
+          if [ -n "$TAURI_DMG" ]; then
+            gh release delete-asset "$TAG" "$(basename "$TAURI_DMG")" --yes || true
+          fi
