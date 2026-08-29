@@ -40,16 +40,34 @@ git switch -c your-change
 git checkout main
 git merge --ff-only dev
 git push origin main
-git tag v1.0.0
-git push origin v1.0.0   # this starts the Release workflow
+git tag v1.0.1
+git push origin v1.0.1   # this starts the Release workflow
 ```
 
 ## GitHub Actions
 
 - **CI** runs TypeScript check, runtime tests, and Rust tests on pushes and pull requests to `dev` and `main`.
-- **Release** builds Windows and macOS (Apple Silicon + Intel) installers when you push a version tag (`v1.0.0`). Installers are uploaded as assets on the GitHub Release `Cursor Gateway v<version>`.
+- **Release** builds Windows and macOS (Apple Silicon + Intel) installers when you push a version tag (`v1.0.1`). Installers are uploaded as assets on the GitHub Release `Cursor Gateway v<version>`.
 
-macOS artifacts from CI are unsigned unless you add Apple signing secrets later. Windows NSIS/MSI builds do not need extra secrets.
+macOS GitHub builds use **ad-hoc code signing** (same approach as Freeway): `codesign --sign -`, strip quarantine, then pack a DMG with `hdiutil`. No paid Apple Developer certificate is required.
+
+First launch on a fresh Mac may still show a security prompt: **right-click the app → Open → Open**. If macOS says the app is damaged:
+
+```bash
+xattr -cr "/Applications/Cursor Gateway.app"
+open "/Applications/Cursor Gateway.app"
+```
+
+Optional Developer ID + notarization (double-click with no prompt) if you later add these secrets:
+
+- `APPLE_CERTIFICATE` — base64-encoded Developer ID Application `.p12`
+- `APPLE_CERTIFICATE_PASSWORD`
+- `APPLE_SIGNING_IDENTITY`
+- `APPLE_ID`
+- `APPLE_PASSWORD` — [app-specific password](https://support.apple.com/en-us/102654)
+- `APPLE_TEAM_ID`
+
+Windows NSIS/MSI builds do not need extra secrets.
 
 ## Use
 

@@ -1,8 +1,10 @@
 use crate::config::AppConfig;
 use crate::error::{AppError, Result};
 use serde::Serialize;
-use serde_json::Value;
 use std::time::{Duration, Instant};
+
+#[cfg(test)]
+use serde_json::Value;
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -57,26 +59,35 @@ pub fn test_connection(config: &AppConfig) -> Result<ConnectionTest> {
     if model.is_empty() {
         return Err(AppError::msg("Enter a default model"));
     }
+    // Do not wait for a generated token, and do not download model catalogs.
+    // /chat/completions headers prove URL + key + model; /models is fallback
+    // only when that route is missing. OpenRouter-style /models listings can
+    // take seconds before the first byte even when the body is ignored.
     let client = reqwest::blocking::Client::builder()
-        .connect_timeout(Duration::from_secs(3))
-        .timeout(Duration::from_secs(8))
+        .connect_timeout(Duration::from_secs(2))
+        .timeout(Duration::from_secs(6))
+        .pool_max_idle_per_host(0)
+        .tcp_nodelay(true)
         .no_proxy()
         .build()
         .map_err(|e| AppError::msg(e.to_string()))?;
 
-    let models = probe_models(
+    let chat = probe_chat_head(
         &client,
-        &models_url(&config.base_url)?,
+        &completions_url(&config.base_url)?,
         key,
         &model,
         &config.extra_headers,
     )?;
-    if models.ok || models.status == 0 || models.status == 401 || models.status == 403 {
-        return Ok(models);
+    if chat.ok || chat.status == 0 || chat.status == 401 || chat.status == 403 {
+        return Ok(chat);
     }
-    probe_chat_head(
+    if !matches!(chat.status, 404 | 405 | 501) {
+        return Ok(chat);
+    }
+    probe_models(
         &client,
-        &completions_url(&config.base_url)?,
+        &models_url(&config.base_url)?,
         key,
         &model,
         &config.extra_headers,
@@ -105,7 +116,9 @@ fn probe_models(
     extra_headers: &std::collections::HashMap<String, String>,
 ) -> Result<ConnectionTest> {
     let started = Instant::now();
-    let sent = apply_headers(client.get(url), api_key, extra_headers).send();
+    let sent = apply_headers(client.get(url), api_key, extra_headers)
+        .header("connection", "close")
+        .send();
     let latency_ms = started.elapsed().as_millis() as u64;
     let resp = match sent {
         Ok(resp) => resp,
@@ -157,10 +170,12 @@ fn probe_chat_head(
     let started = Instant::now();
     let sent = apply_headers(client.post(url), api_key, extra_headers)
         .header("content-type", "application/json")
+        .header("accept", "text/event-stream, application/json")
+        .header("connection", "close")
         .body(body.to_string())
         .send();
-    let mut latency_ms = started.elapsed().as_millis() as u64;
-    let mut resp = match sent {
+    let latency_ms = started.elapsed().as_millis() as u64;
+    let resp = match sent {
         Ok(resp) => resp,
         Err(err) => {
             return Ok(ConnectionTest {
@@ -183,21 +198,20 @@ fn probe_chat_head(
             message: format!("HTTP {status}: {}", truncate(&text, 280)),
         });
     }
-    let mut buf = [0u8; 4096];
-    let n = std::io::Read::read(&mut resp, &mut buf).unwrap_or(0);
-    latency_ms = started.elapsed().as_millis() as u64;
+    // Status is enough. Waiting for the first SSE token is TTFT of the model
+    // (reasoning models can sit here for many seconds). Drop the body so the
+    // generation is aborted instead of billed as a real completion.
     drop(resp);
-    let text = String::from_utf8_lossy(&buf[..n]);
-    let preview = extract_sse_preview(&text);
     Ok(ConnectionTest {
         ok: true,
         latency_ms,
         status,
         model: model.to_string(),
-        message: format!("Connected · {latency_ms}ms · {model} · {preview}"),
+        message: format!("Connected · {latency_ms}ms · {model} · /chat/completions"),
     })
 }
 
+#[cfg(test)]
 fn extract_preview(body: &str) -> String {
     if let Ok(value) = serde_json::from_str::<Value>(body) {
         if let Some(content) = value
@@ -230,6 +244,7 @@ fn extract_preview(body: &str) -> String {
     }
 }
 
+#[cfg(test)]
 fn extract_sse_preview(body: &str) -> String {
     for line in body.lines() {
         let line = line.trim();
@@ -303,6 +318,71 @@ mod tests {
         assert!(result.ok, "{}", result.message);
         assert_eq!(result.status, 200);
         assert!(result.message.contains("Connected"));
+    }
+
+    #[test]
+    fn chat_ok_does_not_wait_for_first_token() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut buf = [0u8; 4096];
+            let _ = stream.read(&mut buf);
+            let hdr = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n";
+            let _ = stream.write_all(hdr.as_bytes());
+            let _ = stream.flush();
+            thread::sleep(Duration::from_secs(5));
+            let _ = stream.write_all(b"data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n");
+        });
+        let mut cfg = AppConfig::default();
+        cfg.base_url = format!("http://127.0.0.1:{port}/v1");
+        cfg.api_key = "sk-test".into();
+        cfg.default_model = "hy3-free".into();
+        let started = Instant::now();
+        let result = test_connection(&cfg).unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "connection test waited for first token {:?}",
+            started.elapsed()
+        );
+        assert!(result.ok, "{}", result.message);
+        assert_eq!(result.status, 200);
+        assert!(result.message.contains("/chat/completions"), "{}", result.message);
+    }
+
+    #[test]
+    fn chat_404_falls_back_to_models() {
+        let server = Server::http("127.0.0.1:0").unwrap();
+        let port = server.server_addr().to_ip().unwrap().port();
+        thread::spawn(move || {
+            for request in server.incoming_requests().take(2) {
+                let url = request.url().to_string();
+                if url.contains("/models") {
+                    let _ = request.respond(
+                        Response::from_string(r#"{"data":[{"id":"hy3-free"}]}"#)
+                            .with_status_code(StatusCode(200)),
+                    );
+                } else {
+                    let _ = request.respond(
+                        Response::from_string(r#"{"error":"no chat"}"#)
+                            .with_status_code(StatusCode(404)),
+                    );
+                }
+            }
+        });
+        let mut cfg = AppConfig::default();
+        cfg.base_url = format!("http://127.0.0.1:{port}/v1");
+        cfg.api_key = "sk-test".into();
+        cfg.default_model = "hy3-free".into();
+        let result = test_connection(&cfg).unwrap();
+        assert!(result.ok, "{}", result.message);
+        assert_eq!(result.status, 200);
+        assert!(result.message.contains("/models"), "{}", result.message);
     }
 
     #[test]

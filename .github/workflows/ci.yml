@@ -39,6 +39,6 @@ jobs:
           workspaces: src-tauri -> target
 
       - run: npm ci
-      - run: npx tsc --noEmit
+      - run: npm run typecheck
       - run: npm run test:runtime
       - run: npm run test:rust

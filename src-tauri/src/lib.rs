@@ -89,7 +89,13 @@ fn save_proxy_settings(settings: ProxySettings) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn start_patch(mut config: AppConfig) -> Result<OpResult, String> {
+async fn start_patch(config: AppConfig) -> Result<OpResult, String> {
+    tauri::async_runtime::spawn_blocking(move || start_patch_inner(config))
+        .await
+        .map_err(|e| format!("Start failed: {e}"))?
+}
+
+fn start_patch_inner(mut config: AppConfig) -> Result<OpResult, String> {
     if process::cursor_is_running() {
         return Err("Cursor is running. Fully quit Cursor (including the tray icon) before starting.".into());
     }
@@ -100,7 +106,6 @@ fn start_patch(mut config: AppConfig) -> Result<OpResult, String> {
     config::save_config(&config)?;
     let install = cursor::discover()?;
     let mut log = Vec::new();
-    log.push(format!("Cursor: {}", install.root.display()));
     let inject = match prepare_injected_config(&config, &mut log) {
         Ok(cfg) => cfg,
         Err(e) => {
@@ -109,10 +114,7 @@ fn start_patch(mut config: AppConfig) -> Result<OpResult, String> {
         }
     };
     match patch::patch_install(&install, &inject, &mut log) {
-        Ok(()) => {
-            log.push("Done. Fully quit Cursor, then reopen it.".into());
-            Ok(OpResult { ok: true, log })
-        }
+        Ok(()) => Ok(OpResult { ok: true, log }),
         Err(e) => {
             log.push(e.to_string());
             Ok(OpResult { ok: false, log })
@@ -121,17 +123,20 @@ fn start_patch(mut config: AppConfig) -> Result<OpResult, String> {
 }
 
 #[tauri::command]
-fn stop_restore(force: bool) -> Result<OpResult, String> {
+async fn stop_restore(force: bool) -> Result<OpResult, String> {
+    tauri::async_runtime::spawn_blocking(move || stop_restore_inner(force))
+        .await
+        .map_err(|e| format!("Stop failed: {e}"))?
+}
+
+fn stop_restore_inner(force: bool) -> Result<OpResult, String> {
     if process::cursor_is_running() {
         return Err("Cursor is running. Fully quit Cursor (including the tray icon) before stopping.".into());
     }
     let install = cursor::discover()?;
     let mut log = Vec::new();
     match restore::restore_install(&install, force, &mut log) {
-        Ok(()) => {
-            log.push("Done. Fully quit Cursor, then reopen it.".into());
-            Ok(OpResult { ok: true, log })
-        }
+        Ok(()) => Ok(OpResult { ok: true, log }),
         Err(e) => {
             log.push(e.to_string());
             Ok(OpResult { ok: false, log })
@@ -173,8 +178,7 @@ fn prepare_injected_config(config: &AppConfig, log: &mut Vec<String>) -> Result<
     let px = config::load_proxy()?;
     if let Some((origin, rewritten)) = proxy::cors_proxy_rewrite(&inject.base_url, px.port) {
         proxy::ensure_running(origin.clone(), px.port)?;
-        log.push(format!("CORS proxy {rewritten} → {origin}"));
-        log.push("This upstream has no browser CORS. Traffic is rewritten through the built-in proxy. Keep this app running.".into());
+        log.push(format!("proxy  {rewritten}  →  {origin}"));
         inject.base_url = rewritten;
     }
     Ok(inject)

@@ -8,6 +8,8 @@ dist
 dist-ssr
 *.local
 
+*.tsbuildinfo
+
 # Editor
 .vscode/*
 !.vscode/extensions.json
