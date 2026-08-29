@@ -19,3 +19,5 @@ export const defaultConfig = () => invoke<AppConfig>("default_config");
 export const openConfigDir = () => invoke<void>("open_config_dir");
 export const testConnection = (config: AppConfig) =>
   invoke<ConnectionTest>("test_connection", { config });
+export const openCursor = () => invoke<string>("open_cursor");
+export const quitCursor = () => invoke<string>("quit_cursor");

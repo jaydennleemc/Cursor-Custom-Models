@@ -29,6 +29,11 @@ export const btnGhost = cx(
   "min-h-9 border border-line bg-transparent text-[13px] text-muted hover:enabled:text-ink",
 );
 
+export const btnQuit = cx(
+  btn,
+  "min-h-11 border border-bad bg-transparent font-semibold tracking-[0.04em] text-bad hover:enabled:bg-bad hover:enabled:text-[#f8ece9]",
+);
+
 export const control =
   "w-full min-h-10 rounded-[10px] border border-line bg-app px-2.5 py-2 text-ink outline-none focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-copper-2 motion-reduce:transition-none";
 

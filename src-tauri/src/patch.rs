@@ -35,15 +35,38 @@ pub fn bak_intact(path: &Path) -> bool {
     if meta.len() < MIN_BAK_BYTES {
         return false;
     }
+    file_contains(path, b"async transport(") || file_contains(path, b"registerConnectTransportProvider")
+}
+
+fn file_contains(path: &Path, needle: &[u8]) -> bool {
     let Ok(mut file) = fs::File::open(path) else {
         return false;
     };
-    let mut buf = [0u8; 256 * 1024];
-    let Ok(n) = file.read(&mut buf) else {
-        return false;
-    };
-    let head = &buf[..n];
-    memmem(head, b"async transport(") || memmem(head, b"registerConnectTransportProvider")
+    if needle.is_empty() {
+        return true;
+    }
+    let mut buf = vec![0u8; 1024 * 1024];
+    let mut overlap: Vec<u8> = Vec::new();
+    loop {
+        let Ok(n) = file.read(&mut buf) else {
+            return false;
+        };
+        if n == 0 {
+            return false;
+        }
+        if !overlap.is_empty() {
+            overlap.extend_from_slice(&buf[..n]);
+            if memmem(&overlap, needle) {
+                return true;
+            }
+        }
+        if memmem(&buf[..n], needle) {
+            return true;
+        }
+        let keep = needle.len().saturating_sub(1).min(n);
+        overlap.clear();
+        overlap.extend_from_slice(&buf[n - keep..n]);
+    }
 }
 
 fn memmem(hay: &[u8], needle: &[u8]) -> bool {
@@ -297,6 +320,22 @@ mod tests {
         let out = apply_anchors("hello world");
         assert!(!out.patched);
         assert_eq!(out.content, "hello world");
+    }
+
+    #[test]
+    fn bak_intact_finds_anchor_past_first_256kb() {
+        let dir = std::env::temp_dir().join(format!("ccm-bak-{}", std::process::id()));
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("workbench.js.cm-bak");
+        let mut body = vec![b'x'; 400_000];
+        body.extend_from_slice(b"async transport(){return 1}");
+        body.extend_from_slice(&vec![b'y'; 700_000]);
+        fs::write(&path, &body).unwrap();
+        assert!(bak_intact(&path));
+        fs::write(&path, vec![b'z'; 1_200_000]).unwrap();
+        assert!(!bak_intact(&path));
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_dir(&dir);
     }
 
     #[test]

@@ -12,6 +12,7 @@ import {
 } from "./i18n";
 import {
   btnGhost,
+  btnQuit,
   btnStart,
   btnStop,
   card,
@@ -31,9 +32,9 @@ import {
   textareaControl,
 } from "./ui";
 
-const APP_VERSION = "1.0.1";
+const APP_VERSION = "1.0.2";
 
-type BusyKind = "start" | "stop" | "test" | "save" | null;
+type BusyKind = "start" | "stop" | "test" | "save" | "openCursor" | "quitCursor" | null;
 
 function Spinner({ className }: { className?: string }) {
   return (
@@ -146,7 +147,14 @@ export default function App() {
   );
 
   function writeLog(title: string, lines: string[]) {
-    setLog([`${clock(locale)}  ${title}`, ...lines.filter((line) => line.trim())].join("\n"));
+    const block = [`${clock(locale)}  ${title}`, ...lines.filter((line) => line.trim())].join("\n");
+    setLog((prev) => {
+      const next = prev.trim() ? `${prev}\n${block}` : block;
+      if (next.length <= 12000) return next;
+      const cut = next.slice(next.length - 12000);
+      const nl = cut.indexOf("\n");
+      return nl >= 0 ? cut.slice(nl + 1) : cut;
+    });
   }
 
   async function run(kind: Exclude<BusyKind, null>, action: () => Promise<void>) {
@@ -248,6 +256,24 @@ export default function App() {
     });
   }
 
+  async function onOpenCursor() {
+    writeLog(t("openingCursor"), []);
+    await run("openCursor", async () => {
+      const detail = await api.openCursor();
+      writeLog(t("cursorOpened"), [detail]);
+      setBanner({ kind: "ok", text: t("cursorOpened") });
+    });
+  }
+
+  async function onQuitCursor() {
+    writeLog(t("quittingCursor"), []);
+    await run("quitCursor", async () => {
+      const detail = await api.quitCursor();
+      writeLog(t("cursorQuit"), [detail]);
+      setBanner({ kind: "ok", text: t("cursorQuit") });
+    });
+  }
+
   if (!config || !status) {
     return (
       <div className={shell}>
@@ -332,6 +358,38 @@ export default function App() {
               <div className="loading-bar h-full w-1/3 rounded-full bg-copper" />
             </div>
           ) : null}
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              className={cx(btnGhost, "min-h-11", busy === "openCursor" && "disabled:opacity-100")}
+              disabled={busy !== null || !status.cursorFound}
+              aria-busy={busy === "openCursor"}
+              onClick={() => void onOpenCursor()}
+            >
+              {busy === "openCursor" ? (
+                <>
+                  <Spinner />
+                  {t("openingCursor")}
+                </>
+              ) : (
+                t("openCursor")
+              )}
+            </button>
+            <button
+              className={cx(btnQuit, busy === "quitCursor" && "disabled:opacity-100")}
+              disabled={busy !== null || !status.cursorRunning}
+              aria-busy={busy === "quitCursor"}
+              onClick={() => void onQuitCursor()}
+            >
+              {busy === "quitCursor" ? (
+                <>
+                  <Spinner />
+                  {t("quittingCursor")}
+                </>
+              ) : (
+                t("quitCursor")
+              )}
+            </button>
+          </div>
           {patchedCount > 0 ? (
             <label className="flex cursor-pointer items-center gap-2 text-xs text-muted">
               <input
