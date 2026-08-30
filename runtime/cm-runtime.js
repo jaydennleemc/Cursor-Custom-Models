@@ -6,6 +6,10 @@
  * Intercepts the ConnectRPC transport and forwards Chat / Cmd+K / Agent
  * requests to the user-configured OpenAI-compatible API.
  *
+ * v1.6.5: Heartbeat while waiting on upstream fetch/SSE. Cursor's Agent
+ *         client fails the stream after ~30s of silence ("Connection failed")
+ *         which showed up after a few tool rounds when TTFT grew. Upstream
+ *         errors become text+turnEnded instead of throwing (no turnEnded).
  * v1.6.4: toolCallStarted must not carry a result. 1.6.3 stuffed an empty
  *         result onto Started as well, and Cursor aborted the Agent stream
  *         after a handful of tools ("Connection failed").
@@ -566,6 +570,7 @@
   var AGENT_TOOLS_ON = CFG.agentTools !== false;       // 默认开启
   var AGENT_TOOL_TIMEOUT = CFG.agentToolTimeoutMs || 30000;
   var AGENT_MAX_ROUNDS = CFG.agentMaxToolRounds || 8;
+  var AGENT_HB_MS = (CFG.agentHeartbeatMs > 0) ? CFG.agentHeartbeatMs : 2000;
   // OpenAI 函数名 → agent.v1 映射(仅保留有独立 exec 通道的工具: glob/semantic 无 result 通道已移除)
   var AGENT_TOOL_MAP = {
     read_file:        { caseName: "readToolCall",       execCase: "readArgs",        argKeys: { path: "path", offset: "offset", limit: "limit" } },
@@ -1160,6 +1165,42 @@
           return new RespT(outer);
         } catch (e) { err("agentUpdate failed:", e && e.message); return null; }
       }
+      function delayMs(ms) {
+        return new Promise(function (rs) { setTimeout(rs, ms); });
+      }
+      // Keep the Agent ConnectRPC stream alive: Cursor drops it after ~30s of silence.
+      async function* heartbeatWhile(work) {
+        var settled = false, value, error;
+        Promise.resolve(work).then(function (v) { value = v; settled = true; }, function (e) { error = e; settled = true; });
+        var lastHb = Date.now();
+        while (!settled) {
+          if (signal && signal.aborted) {
+            var ae = new Error("Aborted");
+            ae.name = "AbortError";
+            throw ae;
+          }
+          if (ap.heartbeatField && Date.now() - lastHb >= AGENT_HB_MS) {
+            lastHb = Date.now();
+            var hbW = mk(ap.heartbeatField, {});
+            if (hbW) yield hbW;
+          }
+          await delayMs(Math.min(200, AGENT_HB_MS));
+        }
+        if (error) throw error;
+        return value;
+      }
+      function endTurnWith(text) {
+        var msgs = [];
+        if (text && ap.textField) {
+          var emE = mk(ap.textField, { text: text });
+          if (emE) msgs.push(emE);
+        }
+        if (ap.turnEndedField) {
+          var teE = mk(ap.turnEndedField, {});
+          if (teE) msgs.push(teE);
+        }
+        return msgs;
+      }
       // 心跳预发: 防客户端等待首包超时
       if (ap.heartbeatField) { var hb0 = mk(ap.heartbeatField, {}); if (hb0) yield hb0; }
 
@@ -1178,16 +1219,21 @@
       for (var round = 0; round < AGENT_MAX_ROUNDS; round++) {
         var res;
         try {
-          res = await callUpstream(messages, info.model, signal, tools);
+          res = yield* heartbeatWhile(callUpstream(messages, info.model, signal, tools));
         } catch (e) {
           if (e && e.name === "AbortError") throw e;
-          throw new Error(TAG + " upstream fetch failed: " + (e && e.message));
+          err("upstream fetch failed:", e && e.message);
+          var failMsgs = endTurnWith(TAG + " upstream fetch failed: " + (e && e.message));
+          for (var fi = 0; fi < failMsgs.length; fi++) yield failMsgs[fi];
+          return;
         }
         if (!res.ok) {
           var errText2 = "";
           try { errText2 = await res.text(); } catch (eT) { /* noop */ }
           err("upstream error", res.status, errText2 && errText2.slice(0, 300));
-          throw new Error(TAG + " upstream API " + res.status + ": " + String(errText2).slice(0, 300));
+          var failMsgs2 = endTurnWith(TAG + " upstream API " + res.status + ": " + String(errText2).slice(0, 300));
+          for (var fj = 0; fj < failMsgs2.length; fj++) yield failMsgs2[fj];
+          return;
         }
         var it = sseIterator(res);
         var accText = "";
@@ -1195,10 +1241,13 @@
         try {
           while (true) {
             var r;
-            try { r = await it.next(); }
+            try { r = yield* heartbeatWhile(it.next()); }
             catch (eR) {
               if (eR && eR.name === "AbortError") throw eR;
-              throw new Error(TAG + " stream read failed: " + (eR && eR.message));
+              err("stream read failed:", eR && eR.message);
+              var failMsgs3 = endTurnWith(TAG + " stream read failed: " + (eR && eR.message));
+              for (var fk = 0; fk < failMsgs3.length; fk++) yield failMsgs3[fk];
+              return;
             }
             if (r.done) break;
             var part = r.value;
@@ -1277,7 +1326,7 @@
               break;
             }
             if (signal && signal.aborted) break;
-            if (ap.heartbeatField && Date.now() - lastHb > 4000) {
+            if (ap.heartbeatField && Date.now() - lastHb >= AGENT_HB_MS) {
               lastHb = Date.now();
               var hbT = mk(ap.heartbeatField, {});
               if (hbT) yield hbT;
@@ -1709,7 +1758,7 @@
 
   g.__CURSOR_CM__ = {
     active: true,
-    version: "1.6.4",
+    version: "1.6.5",
     stats: stats,
     __dump: dumpStore,
     config: {

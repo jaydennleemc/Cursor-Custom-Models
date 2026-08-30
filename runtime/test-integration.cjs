@@ -19,6 +19,8 @@ let sseScript = null; // 可切换的 SSE 输出脚本
 let sseQueue = [];    // 多轮脚本队列(工具循环测试): 每次上游请求弹出一个
 const requestBodies = []; // 记录每次上游请求体
 let slowMode = false; // 慢速滴流模式(每块间隔80ms)
+let sseHeaderDelay = 0; // 延迟写出响应头(测 Agent 等待上游时的心跳)
+let sseErrorStatus = 0; // 非 0 时返回该 HTTP 状态, 不写 SSE
 
 // ---------- protobuf-es v2 消息类型 mock ----------
 function camel(s) { return s.replace(/_([a-zA-Z])/g, (m, c) => c.toUpperCase()); }
@@ -385,7 +387,7 @@ const server = http.createServer((req, res) => {
   if (req.method === "POST" && req.url.endsWith("/chat/completions")) {
     let body = "";
     req.on("data", (c) => (body += c));
-    req.on("end", () => {
+    req.on("end", async () => {
       lastRequestBody = JSON.parse(body);
       requestBodies.push(lastRequestBody);
       const script = sseQueue.length ? sseQueue.shift() : (sseScript || [
@@ -393,6 +395,18 @@ const server = http.createServer((req, res) => {
         { delta: { content: "，我是" } },
         { delta: { content: "DeepSeek" } }
       ]);
+      if (sseHeaderDelay) {
+        const d = sseHeaderDelay;
+        sseHeaderDelay = 0;
+        await new Promise((rs) => setTimeout(rs, d));
+      }
+      if (sseErrorStatus) {
+        const st = sseErrorStatus;
+        sseErrorStatus = 0;
+        res.writeHead(st, { "content-type": "application/json" });
+        res.end('{"error":{"message":"upstream-500"}}');
+        return;
+      }
       res.writeHead(200, { "content-type": "text/event-stream" });
       if (slowMode) {
         (async () => {
@@ -1126,4 +1140,27 @@ async function runTests(T) {
   releaseHang();
   const hangText = hangMsgs.slice(1).map((m) => m.response && m.response.value && m.response.value.text).join("");
   T("T35 BiDi 开流不等待800ms窗口", dt35 < 400 && hangText === "FAST", dt35 + "ms " + hangText);
+
+  // T36: Cursor Agent 在 ~30s 无包时会 Connection failed。上游首包慢时必须继续心跳。
+  const wHB = new Function(runtimeSrc.replace(JSON.stringify(cfg), JSON.stringify({ ...cfg, agentHeartbeatMs: 120 })) + "\n;return globalThis.__CURSOR_CM__.wrap;")()(origTransport);
+  sseScript = [{ delta: { content: "慢回复" } }];
+  sseHeaderDelay = 400;
+  r = await wHB.stream(svcAgent, mAgentRun, null, null, {}, oneMsg(mkAgentReq("conv-t36", "慢测")));
+  const hb36 = (await collect(r.message)).map(agentInner);
+  const hbCount36 = hb36.filter((x) => x && x.case === "heartbeat").length;
+  const text36 = hb36.filter((x) => x && x.case === "textDelta").map((x) => x.value.text).join("");
+  const turns36 = hb36.filter((x) => x && x.case === "turnEnded").length;
+  T("T36 agent上游慢首包持续心跳",
+    hbCount36 >= 3 && text36 === "慢回复" && turns36 === 1,
+    JSON.stringify(hb36.map((x) => x && x.case)) + " hb=" + hbCount36);
+
+  // T37: 上游 500 不能 throw(否则 Cursor 报 Connection failed / stream ended without turnEnded)
+  sseErrorStatus = 500;
+  r = await wrapped.stream(svcAgent, mAgentRun, null, null, {}, oneMsg(mkAgentReq("conv-t37", "炸了")));
+  const err37 = (await collect(r.message)).map(agentInner);
+  const text37 = err37.filter((x) => x && x.case === "textDelta").map((x) => x.value.text).join("");
+  const turns37 = err37.filter((x) => x && x.case === "turnEnded").length;
+  T("T37 agent上游错误收成text+turnEnded(不抛)",
+    turns37 === 1 && /upstream API 500/.test(text37),
+    JSON.stringify(err37.map((x) => x && x.case)) + " " + text37.slice(0, 80));
 }
