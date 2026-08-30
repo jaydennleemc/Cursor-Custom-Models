@@ -6,6 +6,9 @@
  * Intercepts the ConnectRPC transport and forwards Chat / Cmd+K / Agent
  * requests to the user-configured OpenAI-compatible API.
  *
+ * v1.6.6: toolCallCompleted is args-only again (same as 1.0.2). Attaching
+ *         exec results (1.6.3) made Cursor drop the Agent stream after a
+ *         few tools. Heartbeats while waiting on upstream are unchanged.
  * v1.6.5: Heartbeat while waiting on upstream fetch/SSE. Cursor's Agent
  *         client fails the stream after ~30s of silence ("Connection failed")
  *         which showed up after a few tool rounds when TTFT grew. Upstream
@@ -791,20 +794,8 @@
       }
       var callPartial = {};
       if (argsF) setField(callPartial, argsF, argsT ? new argsT(argsPartial) : argsPartial);
-      // Only Completed gets a result. Started with an empty result made Cursor
-      // treat the tool as already done and drop the Agent stream after a few steps.
-      if (resultMsg) {
-        var resF = findFieldDeep(CallT, "result");
-        if (resF) {
-          var payload = resultMsg;
-          var plain = payload && typeof payload === "object" &&
-            (payload.constructor === Object || Object.getPrototypeOf(payload) === Object.prototype);
-          if (plain && resF.T && !(payload instanceof resF.T)) {
-            try { payload = new resF.T(payload); } catch (eWrap) { /* keep original */ }
-          }
-          setField(callPartial, resF, payload);
-        }
-      }
+      // 1.0.2: never attach exec results on Started/Completed. Cursor's decoder
+      // drops the Agent stream when Completed.result is the exec-channel type.
       var tcPartial = {};
       setField(tcPartial, caseF, new CallT(callPartial));
       var updPartial = { callId: callId };
@@ -1333,8 +1324,8 @@
             }
             await new Promise(function (rs) { setTimeout(rs, 20); });
           }
-          // toolCallCompleted(带结果回填, UI 收尾 — 缺 result 时 Editing 不会结束)
-          var cpMsg = buildAgentToolUpdate(ap, ap.toolCompletedField, c2.id, resolved, argsObj, resultMsg || {});
+          // toolCallCompleted: 与 1.0.2 相同, 不带 exec result(带上会掐断 Agent 流)
+          var cpMsg = buildAgentToolUpdate(ap, ap.toolCompletedField, c2.id, resolved, argsObj, null);
           if (cpMsg) yield cpMsg;
           var resultText = resultMsg
             ? serializeToolResult(resultMsg).slice(0, 60000)
@@ -1758,7 +1749,7 @@
 
   g.__CURSOR_CM__ = {
     active: true,
-    version: "1.6.5",
+    version: "1.6.6",
     stats: stats,
     __dump: dumpStore,
     config: {
