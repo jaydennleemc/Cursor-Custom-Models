@@ -1,5 +1,5 @@
 /* ============================================================
- * Cursor Custom Models Runtime v1.6.1
+ * Cursor Custom Models Runtime v1.6.8
  * Injected at the end of three files (same code, separate processes):
  *   workbench.desktop.main.js / workbench.glass.main.js (renderer)
  *   extensionHostProcess.js (extension host — where HTTP actually terminates)
