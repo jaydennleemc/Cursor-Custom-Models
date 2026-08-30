@@ -51,7 +51,7 @@ npm run tauri build
 
 Do not claim an Agent/Chat protocol fix works unless `npm run test:runtime` is green.
 
-App version lives in `package.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`, and `src/App.tsx` (`APP_VERSION`). Runtime protocol version is `g.__CURSOR_CM__.version` inside `cm-runtime.js` (currently independent, e.g. `1.6.8`).
+App version lives in `package.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`, and `src/App.tsx` (`APP_VERSION`). Runtime protocol version is `g.__CURSOR_CM__.version` inside `cm-runtime.js` (currently `1.6.8`). The file banner `Cursor Custom Models Runtime vX.Y.Z` **must match** that exported version — T1 asserts this. App `1.0.x` and runtime `1.6.x` are independent; keep the four app-version locations in sync with each other.
 
 ## How the Agent path works
 

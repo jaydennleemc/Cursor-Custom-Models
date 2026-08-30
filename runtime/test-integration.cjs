@@ -1,5 +1,5 @@
 // ============================================================
-// 集成测试 v1.6: 模拟 Cursor transport + protobuf-es v2 消息类型 + Mock SSE
+// 集成测试 v1.6.8: 模拟 Cursor transport + protobuf-es v2 消息类型 + Mock SSE
 // 覆盖: 消息提取 / 模型映射 / SSE解析 / oneof包装响应构造 /
 //       CmdK编辑协议 / Agent包装响应 / streamStart / BiDi合并 / 透传 / 错误处理 /
 //       agent.v1.AgentService/Run 协议(Agents 界面: 心跳/textDelta/thinkingDelta/
@@ -544,7 +544,10 @@ async function runTests(T) {
     .replace("__CM_CONFIG_PLACEHOLDER__", JSON.stringify(cfg));
   new Function(runtimeSrc)();
   const cm = globalThis.__CURSOR_CM__;
-  T("T1 runtime active", cm.active === true && /^1\./.test(String(cm.version)));
+  const bannerVer = (runtimeSrc.match(/Cursor Custom Models Runtime v([0-9.]+)/) || [])[1];
+  T("T1 runtime active",
+    cm.active === true && /^\d+\.\d+\.\d+$/.test(String(cm.version)) && bannerVer === String(cm.version),
+    "version=" + cm.version + " banner=" + bannerVer);
 
   const svcChat = { typeName: "aiserver.v1.ChatService" };
   const svcCmdK = { typeName: "aiserver.v1.CmdKService" };
