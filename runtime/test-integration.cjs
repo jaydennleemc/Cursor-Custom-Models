@@ -832,8 +832,7 @@ async function runTests(T) {
     !started25.value.toolCall.tool.value.result &&
     !!completed25 && completed25.value.callId === "call_1" &&
     completed25.value.toolCall.tool.case === "readToolCall" &&
-    completed25.value.toolCall.tool.value.result instanceof ReadFileResultT &&
-    completed25.value.toolCall.tool.value.result.content === "FILE-CONTENT-X" &&
+    !completed25.value.toolCall.tool.value.result &&
     text25 === "文件内容是X" && turns25 === 1 &&
     Array.isArray(body1.tools) && body1.tools.length === 8 &&
     !!asstMsg && asstMsg.tool_calls[0].function.name === "read_file" &&
@@ -856,7 +855,7 @@ async function runTests(T) {
     toText === "降级完成" &&
     !!toToolMsg && /timed out/.test(toToolMsg.content) &&
     !!completed26 && completed26.value.toolCall.tool.case === "readToolCall" &&
-    !!completed26.value.toolCall.tool.value.result &&
+    !completed26.value.toolCall.tool.value.result &&
     (Date.now() - t0) >= 200 && (Date.now() - t0) < 5000,
     JSON.stringify(toInners.map((x) => x && x.case)));
 
@@ -1038,8 +1037,7 @@ async function runTests(T) {
     !!ex31 && ex31.case === "writeArgs" && ex31.value instanceof WriteArgsT &&
     ex31.value.path === "out/new.txt" && ex31.value.fileText === "HELLO" && ex31.value.toolCallId === "call_w" &&
     !!cpTool31 && cpTool31.case === "editToolCall" &&
-    cpTool31.value.result instanceof WriteResultT &&
-    cpTool31.value.result.message === "WROTE-OK" &&
+    !cpTool31.value.result &&
     text31 === "写入完成" &&
     !!tool31 && tool31.tool_call_id === "call_w" && tool31.content.includes("WROTE-OK"),
     JSON.stringify(inners31.map((x) => x && x.case)) + "|" + String(ex31 && ex31.case));
@@ -1089,7 +1087,7 @@ async function runTests(T) {
     !!mcpArgs32.args && mcpArgs32.args.url instanceof ValueT && mcpArgs32.args.url.jsonValue === "https://example.com" &&
     !!ex32 && ex32.case === "mcpArgs" && ex32.value instanceof McpArgsT && ex32.value.args.url instanceof ValueT &&
     !!cp32 && cp32.case === "mcpToolCall" &&
-    cp32.value.result instanceof McpResultT && cp32.value.result.content === "NAV-OK" &&
+    !cp32.value.result &&
     text32 === "导航完成" &&
     !!tool32 && tool32.tool_call_id === "call_m" && tool32.content.includes("NAV-OK"),
     JSON.stringify(inners32.map((x) => x && x.case)) + "|" + String(ex32 && ex32.case));
