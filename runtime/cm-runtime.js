@@ -6,6 +6,14 @@
  * Intercepts the ConnectRPC transport and forwards Chat / Cmd+K / Agent
  * requests to the user-configured OpenAI-compatible API.
  *
+ * v1.6.8: heartbeatWhile races the work Promise instead of sleeping 200ms
+ *         per SSE chunk (1.6.5 made long replies crawl). Tool-round preamble
+ *         goes to thinkingDelta, not textDelta (stops "Let me write…" stacking).
+ *         thinkingDelta while waiting on the model / a tool so the UI is not blank.
+ * v1.6.7: Completed synthesizes the UI result type (EditResult.success with
+ *         after_full_file_content from write args). Never attach the exec
+ *         WriteResult instance — that is a different message and Cursor
+ *         drops the Agent stream. Started still has no result.
  * v1.6.6: toolCallCompleted is args-only again (same as 1.0.2). Attaching
  *         exec results (1.6.3) made Cursor drop the Agent stream after a
  *         few tools. Heartbeats while waiting on upstream are unchanged.
@@ -761,9 +769,66 @@
     try { if (msg && msg.toJson) return JSON.stringify(msg.toJson()); } catch (e) { /* fallthrough */ }
     try { return JSON.stringify(msg); } catch (e2) { return String(msg); }
   }
+  function execResultBag(msg) {
+    var o = {};
+    if (!msg) return o;
+    try {
+      if (typeof msg.toJson === "function") {
+        var j = msg.toJson();
+        if (j && typeof j === "object") o = j;
+      }
+    } catch (eJ) { /* fallthrough */ }
+    if (msg.content != null && o.content == null) o.content = msg.content;
+    if (msg.message != null && o.message == null) o.message = msg.message;
+    if (msg.path != null && o.path == null) o.path = msg.path;
+    if (msg.afterFullFileContent != null && o.afterFullFileContent == null) o.afterFullFileContent = msg.afterFullFileContent;
+    if (msg.result && msg.result.case && msg.result.value) {
+      var inner = execResultBag(msg.result.value);
+      for (var ik in inner) if (o[ik] == null) o[ik] = inner[ik];
+    }
+    return o;
+  }
+  function copyIfField(T, dst, localName, val) {
+    if (val === undefined || val === null) return;
+    var f = findFieldDeep(T, localName);
+    if (!f) return;
+    dst[f.localName] = val;
+  }
+  // UI 层 result 与 exec 通道不是同一条消息(EditResult vs WriteResult)。
+  // 必须 new CallT.result.T(...), 绝不能把 exec 实例塞进去。
+  function synthesizeUiResult(CallT, argsObj, resultMsg) {
+    var resF = findFieldDeep(CallT, "result");
+    if (!resF || !resF.T) return null;
+    var ResultT = resF.T;
+    var src = execResultBag(resultMsg);
+    var path = (argsObj && argsObj.path) || src.path || "";
+    var fileText = (argsObj && (argsObj.content != null ? argsObj.content : argsObj.fileText)) || src.content || "";
+    try {
+      var successF = findFieldDeep(ResultT, "success");
+      if (successF && successF.T) {
+        var suc = {};
+        copyIfField(successF.T, suc, "path", path);
+        copyIfField(successF.T, suc, "afterFullFileContent", fileText);
+        if (src.content != null && src.content !== "") copyIfField(successF.T, suc, "content", src.content);
+        copyIfField(successF.T, suc, "message", src.message || (!resultMsg ? "timed out" : undefined));
+        var rp = {};
+        setField(rp, successF, new successF.T(suc));
+        return new ResultT(rp);
+      }
+      var flat = {};
+      copyIfField(ResultT, flat, "content", src.content);
+      copyIfField(ResultT, flat, "message", src.message || (!resultMsg ? "timed out" : undefined));
+      copyIfField(ResultT, flat, "path", path);
+      return new ResultT(flat);
+    } catch (eSyn) {
+      err("ui result synthesize failed:", eSyn && eSyn.message);
+      try { return new ResultT({}); } catch (eEmpty) { return null; }
+    }
+  }
   // 构造 toolCallStarted/Completed 更新消息(全类型内省, 不依赖压缩变量名)
   // ap: {interField, interType, outerType}; field: Started/Completed 字段描述符
-  function buildAgentToolUpdate(ap, field, callId, resolved, argsObj, resultMsg) {
+  // asCompleted: 只在 Completed 上填 UI result; Started 不能带 result
+  function buildAgentToolUpdate(ap, field, callId, resolved, argsObj, resultMsg, asCompleted) {
     try {
       if (!field || !field.T) return null;
       var entry = resolved && resolved.entry;
@@ -794,8 +859,11 @@
       }
       var callPartial = {};
       if (argsF) setField(callPartial, argsF, argsT ? new argsT(argsPartial) : argsPartial);
-      // 1.0.2: never attach exec results on Started/Completed. Cursor's decoder
-      // drops the Agent stream when Completed.result is the exec-channel type.
+      if (asCompleted) {
+        var resF = findFieldDeep(CallT, "result");
+        var uiRes = synthesizeUiResult(CallT, argsObj, resultMsg);
+        if (resF && uiRes) setField(callPartial, resF, uiRes);
+      }
       var tcPartial = {};
       setField(tcPartial, caseF, new CallT(callPartial));
       var updPartial = { callId: callId };
@@ -1159,23 +1227,47 @@
       function delayMs(ms) {
         return new Promise(function (rs) { setTimeout(rs, ms); });
       }
+      function thinkMsg(text) {
+        if (!text || !ap.thinkingField) return null;
+        return mk(ap.thinkingField, { text: text });
+      }
+      function toolProgressText(name, args) {
+        var a = args || {};
+        if (name === "write_file") return "Editing " + (a.path || "file") + "…";
+        if (name === "read_file") return "Reading " + (a.path || "file") + "…";
+        if (name === "delete_file") return "Deleting " + (a.path || "file") + "…";
+        if (name === "list_dir") return "Listing " + (a.path || "directory") + "…";
+        if (name === "grep_search") return "Searching " + (a.pattern || "") + "…";
+        if (name === "run_terminal_cmd") return "Running " + String(a.command || "command").slice(0, 80) + "…";
+        if (name === "web_fetch") return "Fetching " + (a.url || "url") + "…";
+        if (name === "read_lints") return "Reading lints…";
+        return "Running " + name + "…";
+      }
       // Keep the Agent ConnectRPC stream alive: Cursor drops it after ~30s of silence.
-      async function* heartbeatWhile(work) {
+      // Race the work Promise — a 200ms poll-then-check (1.6.5) added 200ms per SSE token.
+      async function* heartbeatWhile(work, waitHint) {
         var settled = false, value, error;
-        Promise.resolve(work).then(function (v) { value = v; settled = true; }, function (e) { error = e; settled = true; });
+        var workP = Promise.resolve(work).then(function (v) { value = v; settled = true; }, function (e) { error = e; settled = true; });
         var lastHb = Date.now();
+        var hinted = false;
+        var t0 = Date.now();
         while (!settled) {
           if (signal && signal.aborted) {
             var ae = new Error("Aborted");
             ae.name = "AbortError";
             throw ae;
           }
+          if (!hinted && waitHint && Date.now() - t0 >= 1000) {
+            hinted = true;
+            var thW = thinkMsg(waitHint);
+            if (thW) yield thW;
+          }
           if (ap.heartbeatField && Date.now() - lastHb >= AGENT_HB_MS) {
             lastHb = Date.now();
             var hbW = mk(ap.heartbeatField, {});
             if (hbW) yield hbW;
           }
-          await delayMs(Math.min(200, AGENT_HB_MS));
+          await Promise.race([workP, delayMs(Math.min(200, AGENT_HB_MS))]);
         }
         if (error) throw error;
         return value;
@@ -1210,7 +1302,7 @@
       for (var round = 0; round < AGENT_MAX_ROUNDS; round++) {
         var res;
         try {
-          res = yield* heartbeatWhile(callUpstream(messages, info.model, signal, tools));
+          res = yield* heartbeatWhile(callUpstream(messages, info.model, signal, tools), "Waiting for model…");
         } catch (e) {
           if (e && e.name === "AbortError") throw e;
           err("upstream fetch failed:", e && e.message);
@@ -1228,6 +1320,7 @@
         }
         var it = sseIterator(res);
         var accText = "";
+        var roundChunks = [];
         var pending = {}; // SSE index → {id,name,args}
         try {
           while (true) {
@@ -1244,7 +1337,8 @@
             var part = r.value;
             if (!part) continue;
             if (part.type === "reasoning" && !CFG.sendReasoningAsText) {
-              if (ap.thinkingField) { var tm = mk(ap.thinkingField, { text: part.text }); if (tm) yield tm; }
+              var tmR = thinkMsg(part.text);
+              if (tmR) yield tmR;
               continue;
             }
             if (part.type === "toolCall") {
@@ -1261,10 +1355,10 @@
               continue;
             }
             if (part.type === "text" && part.text) {
-              finalText += part.text;
               accText += part.text;
-              var am = mk(ap.textField, { text: part.text });
-              if (am) yield am;
+              roundChunks.push(part.text);
+              var tmLive = thinkMsg(part.text);
+              if (tmLive) yield tmLive;
             }
           }
         } finally {
@@ -1275,6 +1369,19 @@
 
         var calls = Object.keys(pending).map(function (k) { return pending[k]; })
           .filter(function (c) { return c.name && resolveAgentTool(c.name, mcpTools); });
+        // 工具轮次的计划正文进 thinking, 不进回复, 避免 "Let me write…" 叠在最终答案前面。
+        if (calls.length && toolsOn) {
+          if (!roundChunks.length) {
+            var tmP = thinkMsg("Using " + calls.map(function (c) { return c.name; }).join(", ") + "…");
+            if (tmP) yield tmP;
+          }
+        } else {
+          for (var ri = 0; ri < roundChunks.length; ri++) {
+            finalText += roundChunks[ri];
+            var am = mk(ap.textField, { text: roundChunks[ri] });
+            if (am) yield am;
+          }
+        }
         if (!calls.length || !toolsOn) break; // 纯文本回合 → 结束循环
 
         log("agent round", round + 1, "| tool calls:", calls.length, "(" + calls.map(function (c) { return c.name; }).join(",") + ")");
@@ -1296,7 +1403,9 @@
           // 3) 等待 execClientMessage 结果 → toolCallCompleted 收尾
           var resolved = resolveAgentTool(c2.name, mcpTools);
           if (!resolved) continue;
-          var stMsg = buildAgentToolUpdate(ap, ap.toolStartedField, c2.id, resolved, argsObj, null);
+          var prog = thinkMsg(toolProgressText(c2.name, argsObj));
+          if (prog) yield prog;
+          var stMsg = buildAgentToolUpdate(ap, ap.toolStartedField, c2.id, resolved, argsObj, null, false);
           if (stMsg) yield stMsg;
           var execMsg = buildExecServerUpdate(RespT, callSeq * 1000 + ci, c2.id, resolved, argsObj);
           if (!execMsg) { log("no execServerMessage channel, skip exec"); }
@@ -1324,8 +1433,8 @@
             }
             await new Promise(function (rs) { setTimeout(rs, 20); });
           }
-          // toolCallCompleted: 与 1.0.2 相同, 不带 exec result(带上会掐断 Agent 流)
-          var cpMsg = buildAgentToolUpdate(ap, ap.toolCompletedField, c2.id, resolved, argsObj, null);
+          // Completed: UI 层 result(EditResult.success), 不是 exec WriteResult
+          var cpMsg = buildAgentToolUpdate(ap, ap.toolCompletedField, c2.id, resolved, argsObj, resultMsg, true);
           if (cpMsg) yield cpMsg;
           var resultText = resultMsg
             ? serializeToolResult(resultMsg).slice(0, 60000)
@@ -1749,7 +1858,7 @@
 
   g.__CURSOR_CM__ = {
     active: true,
-    version: "1.6.6",
+    version: "1.6.8",
     stats: stats,
     __dump: dumpStore,
     config: {

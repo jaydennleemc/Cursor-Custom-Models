@@ -292,9 +292,18 @@ const EditArgsT = makeType("agent.v1.EditArgs", [
 const WriteResultT = makeType("agent.v1.WriteResult", [
   { no: 1, name: "message", kind: "scalar" }
 ]);
+// 真实 Cursor: EditToolCall.result 是 EditResult(success oneof), 不是 exec 的 WriteResult
+const EditSuccessT = makeType("agent.v1.EditSuccess", [
+  { no: 1, name: "path", kind: "scalar" },
+  { no: 7, name: "after_full_file_content", kind: "scalar" },
+  { no: 8, name: "message", kind: "scalar", opt: true }
+]);
+const EditResultT = makeType("agent.v1.EditResult", [
+  { no: 1, name: "success", kind: "message", T: EditSuccessT, oneof: "result" }
+]);
 const EditToolCallT = makeType("agent.v1.EditToolCall", [
   { no: 1, name: "args", kind: "message", T: EditArgsT },
-  { no: 2, name: "result", kind: "message", T: WriteResultT }
+  { no: 2, name: "result", kind: "message", T: EditResultT }
 ]);
 const McpArgsT = makeType("agent.v1.McpArgs", [
   { no: 1, name: "name", kind: "scalar" },
@@ -768,9 +777,10 @@ async function runTests(T) {
   sseScript = [{ delta: { reasoning_content: "想一下" } }, { delta: { content: "答案" } }];
   r = await wrapped.stream(svcAgent, mAgentRun, null, null, {}, oneMsg(mkAgentReq("conv-t22", "问")));
   const thinkInners = (await collect(r.message)).map(agentInner);
+  const thinkJoined22 = thinkInners.filter((x) => x && x.case === "thinkingDelta").map((x) => x.value.text).join("");
+  const textJoined22 = thinkInners.filter((x) => x && x.case === "textDelta").map((x) => x.value.text).join("");
   T("T22 agent thinking→thinkingDelta",
-    thinkInners[1] && thinkInners[1].case === "thinkingDelta" && thinkInners[1].value.text === "想一下" &&
-    thinkInners[2] && thinkInners[2].case === "textDelta" && thinkInners[2].value.text === "答案",
+    thinkJoined22.indexOf("想一下") >= 0 && textJoined22 === "答案",
     JSON.stringify(thinkInners.map((x) => x && x.case)));
 
   // T23: agent 多轮记忆 — 同 conversationId 第二轮携带历史(含 system 规则)
@@ -832,7 +842,8 @@ async function runTests(T) {
     !started25.value.toolCall.tool.value.result &&
     !!completed25 && completed25.value.callId === "call_1" &&
     completed25.value.toolCall.tool.case === "readToolCall" &&
-    !completed25.value.toolCall.tool.value.result &&
+    completed25.value.toolCall.tool.value.result instanceof ReadFileResultT &&
+    completed25.value.toolCall.tool.value.result.content === "FILE-CONTENT-X" &&
     text25 === "文件内容是X" && turns25 === 1 &&
     Array.isArray(body1.tools) && body1.tools.length === 8 &&
     !!asstMsg && asstMsg.tool_calls[0].function.name === "read_file" &&
@@ -855,7 +866,7 @@ async function runTests(T) {
     toText === "降级完成" &&
     !!toToolMsg && /timed out/.test(toToolMsg.content) &&
     !!completed26 && completed26.value.toolCall.tool.case === "readToolCall" &&
-    !completed26.value.toolCall.tool.value.result &&
+    !!completed26.value.toolCall.tool.value.result &&
     (Date.now() - t0) >= 200 && (Date.now() - t0) < 5000,
     JSON.stringify(toInners.map((x) => x && x.case)));
 
@@ -1037,7 +1048,12 @@ async function runTests(T) {
     !!ex31 && ex31.case === "writeArgs" && ex31.value instanceof WriteArgsT &&
     ex31.value.path === "out/new.txt" && ex31.value.fileText === "HELLO" && ex31.value.toolCallId === "call_w" &&
     !!cpTool31 && cpTool31.case === "editToolCall" &&
-    !cpTool31.value.result &&
+    cpTool31.value.result instanceof EditResultT &&
+    !(cpTool31.value.result instanceof WriteResultT) &&
+    cpTool31.value.result.result && cpTool31.value.result.result.case === "success" &&
+    cpTool31.value.result.result.value instanceof EditSuccessT &&
+    cpTool31.value.result.result.value.path === "out/new.txt" &&
+    cpTool31.value.result.result.value.afterFullFileContent === "HELLO" &&
     text31 === "写入完成" &&
     !!tool31 && tool31.tool_call_id === "call_w" && tool31.content.includes("WROTE-OK"),
     JSON.stringify(inners31.map((x) => x && x.case)) + "|" + String(ex31 && ex31.case));
@@ -1087,7 +1103,8 @@ async function runTests(T) {
     !!mcpArgs32.args && mcpArgs32.args.url instanceof ValueT && mcpArgs32.args.url.jsonValue === "https://example.com" &&
     !!ex32 && ex32.case === "mcpArgs" && ex32.value instanceof McpArgsT && ex32.value.args.url instanceof ValueT &&
     !!cp32 && cp32.case === "mcpToolCall" &&
-    !cp32.value.result &&
+    cp32.value.result instanceof McpResultT &&
+    cp32.value.result.content === "NAV-OK" &&
     text32 === "导航完成" &&
     !!tool32 && tool32.tool_call_id === "call_m" && tool32.content.includes("NAV-OK"),
     JSON.stringify(inners32.map((x) => x && x.case)) + "|" + String(ex32 && ex32.case));
@@ -1161,4 +1178,46 @@ async function runTests(T) {
   T("T37 agent上游错误收成text+turnEnded(不抛)",
     turns37 === 1 && /upstream API 500/.test(text37),
     JSON.stringify(err37.map((x) => x && x.case)) + " " + text37.slice(0, 80));
+
+  // T38: heartbeatWhile 必须 race 上游 Promise。若对每个 SSE chunk 先 sleep 200ms
+  //     再看 settled, 10 个 token 会空等 ~2s —— 1.6.5 引入的体感卡死。
+  sseScript = [];
+  for (let i = 0; i < 10; i++) sseScript.push({ delta: { content: String(i) } });
+  const t38 = Date.now();
+  r = await wrapped.stream(svcAgent, mAgentRun, null, null, {}, oneMsg(mkAgentReq("conv-t38", "快流")));
+  const inners38 = (await collect(r.message)).map(agentInner);
+  const dt38 = Date.now() - t38;
+  const text38 = inners38.filter((x) => x && x.case === "textDelta").map((x) => x.value.text).join("");
+  T("T38 agent SSE 多 chunk 不按块空等200ms",
+    dt38 < 600 && text38 === "0123456789",
+    dt38 + "ms " + text38 + " " + JSON.stringify(inners38.map((x) => x && x.case)));
+
+  // T39: 同一轮既有计划正文又有 tool_calls 时, 计划进 thinkingDelta 而不是
+  //     textDelta。否则 UI 会堆 "Let me write…" 然后工具失败再堆一遍。
+  sseQueue = [
+    [
+      { delta: { content: "Let me write AGENTS.md" } },
+      { delta: { tool_calls: [{ index: 0, id: "call_w2", type: "function", function: { name: "write_file", arguments: "{\"path\":\"AGENTS.md\",\"content\":\"# hi\"}" } }] } }
+    ],
+    [{ delta: { content: "写好了" } }]
+  ];
+  r = await wrapped.stream(svcAgent, mAgentRun, null, null, {}, (async function* () {
+    yield mkAgentReq("conv-t39", "写 AGENTS.md");
+    await new Promise((rs) => setTimeout(rs, 300));
+    yield new AgentClientMsgT({
+      message: { case: "execClientMessage", value: new ExecClientMessageT({
+        id: 1, execId: "call_w2",
+        message: { case: "writeResult", value: new WriteResultT({ message: "WROTE-OK" }) }
+      }) }
+    });
+  })());
+  const inners39 = (await collect(r.message)).map(agentInner);
+  const text39 = inners39.filter((x) => x && x.case === "textDelta").map((x) => x.value.text).join("");
+  const think39 = inners39.filter((x) => x && x.case === "thinkingDelta").map((x) => x.value.text).join("");
+  const started39 = inners39.find((x) => x && x.case === "toolCallStarted");
+  T("T39 工具轮次计划文案进thinking不进回复",
+    text39 === "写好了" &&
+    think39.indexOf("Let me write AGENTS.md") >= 0 &&
+    !!started39 && !started39.value.toolCall.tool.value.result,
+    JSON.stringify(inners39.map((x) => x && x.case)) + " text=" + text39 + " think=" + think39);
 }
