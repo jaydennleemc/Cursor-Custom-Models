@@ -67,4 +67,9 @@ export interface ConnectionTest {
   message: string;
 }
 
+export interface ProfilesState {
+  activeProfile: string | null;
+  profiles: Record<string, AppConfig>;
+}
+
 

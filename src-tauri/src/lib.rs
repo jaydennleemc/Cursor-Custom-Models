@@ -5,10 +5,12 @@ mod cursor;
 mod error;
 mod patch;
 mod process;
+mod profiles;
 mod proxy;
 mod restore;
 
 use config::{AppConfig, ProxySettings};
+use profiles::ProfilesState;
 use connectivity::ConnectionTest;
 use cursor::TargetStatus;
 use serde::Serialize;
@@ -203,6 +205,31 @@ async fn quit_cursor() -> Result<String, String> {
 }
 
 #[tauri::command]
+fn list_profiles() -> Result<ProfilesState, String> {
+    Ok(profiles::list_profiles()?)
+}
+
+#[tauri::command]
+fn save_profile(name: String, config: AppConfig) -> Result<ProfilesState, String> {
+    Ok(profiles::save_profile(&name, &config)?)
+}
+
+#[tauri::command]
+fn load_profile(name: String) -> Result<AppConfig, String> {
+    Ok(profiles::load_profile(&name)?)
+}
+
+#[tauri::command]
+fn delete_profile(name: String) -> Result<ProfilesState, String> {
+    Ok(profiles::delete_profile(&name)?)
+}
+
+#[tauri::command]
+fn set_active_profile(name: String) -> Result<ProfilesState, String> {
+    Ok(profiles::set_active_profile(&name)?)
+}
+
+#[tauri::command]
 fn open_config_dir() -> Result<(), String> {
     let dir = config::config_dir_path()?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -252,7 +279,12 @@ pub fn run() {
             open_config_dir,
             open_cursor,
             quit_cursor,
-            test_connection
+            test_connection,
+            list_profiles,
+            save_profile,
+            load_profile,
+            delete_profile,
+            set_active_profile
         ])
         .on_window_event(|window, event| {
             #[cfg(target_os = "macos")]

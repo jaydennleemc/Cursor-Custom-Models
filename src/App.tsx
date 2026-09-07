@@ -110,6 +110,7 @@ export default function App() {
   const [busy, setBusy] = useState<BusyKind>(null);
   const [force, setForce] = useState(false);
   const [locale, setLocale] = useState<Locale>(() => readLocale());
+  const [showProfileSave, setShowProfileSave] = useState(false);
   const t = useMemo(() => createT(locale), [locale]);
   const [banner, setBanner] = useState<{ kind: "ok" | "bad"; text: string } | null>(null);
   const [log, setLog] = useState("");
@@ -420,22 +421,51 @@ export default function App() {
           <h2 className="m-0 text-[22px] tracking-[-0.04em]">{t("settings")}</h2>
           <div className="flex items-center gap-2">
             <LanguageDialog locale={locale} onChange={setLocale} t={t} />
-            <button className={btnGhost} disabled={busy !== null} onClick={() => void api.openConfigDir()}>
-              {t("openConfig")}
+            <button
+              type="button"
+              className={cx(btnGhost, "px-2.5")}
+              disabled={busy !== null}
+              aria-label={t("openConfig")}
+              onClick={() => void api.openConfigDir()}
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="h-5 w-5"
+              >
+                <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+              </svg>
             </button>
             <button
-              className={cx(btnGhost, busy === "save" && "disabled:opacity-100")}
+              type="button"
+              className={cx(btnGhost, "px-2.5", busy === "save" && "disabled:opacity-100")}
               disabled={busy !== null}
+              aria-label={t("save")}
               aria-busy={busy === "save"}
               onClick={() => void onSave()}
             >
               {busy === "save" ? (
-                <>
-                  <Spinner />
-                  {t("saving")}
-                </>
+                <Spinner className="h-5 w-5" />
               ) : (
-                t("save")
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="h-5 w-5"
+                >
+                  <path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z" />
+                  <path d="M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7" />
+                  <path d="M7 3v4a1 1 0 0 0 1 1h7" />
+                </svg>
               )}
             </button>
           </div>
@@ -454,7 +484,16 @@ export default function App() {
 
         <div className="grid gap-4">
           <section className={panel}>
-            <h2 className={headingSm}>{t("upstream")}</h2>
+            <div className="flex items-center justify-between">
+              <h2 className={headingSm}>{t("upstream")}</h2>
+              <ProfilesSection
+                config={config}
+                t={t}
+                onConfigChange={setConfig}
+                showSave={showProfileSave}
+                onShowSaveChange={setShowProfileSave}
+              />
+            </div>
             <div className="grid gap-3">
               <label className={field}>
                 <span className="tracking-[0.02em]">{t("provider")}</span>
@@ -561,22 +600,32 @@ export default function App() {
                   onChange={(e) => setConfig({ ...config, apiKey: e.target.value })}
                 />
               </label>
-              <button
-                className={cx(btnGhost, "justify-self-start", busy === "test" && "disabled:opacity-100")}
-                type="button"
-                disabled={busy !== null}
-                aria-busy={busy === "test"}
-                onClick={() => void onTestConnection()}
-              >
-                {busy === "test" ? (
-                  <>
-                    <Spinner />
-                    {t("testing")}
-                  </>
-                ) : (
-                  t("testConnection")
-                )}
-              </button>
+              <div className="flex items-center gap-2 justify-self-start">
+                <button
+                  className={cx(btnGhost, busy === "test" && "disabled:opacity-100")}
+                  type="button"
+                  disabled={busy !== null}
+                  aria-busy={busy === "test"}
+                  onClick={() => void onTestConnection()}
+                >
+                  {busy === "test" ? (
+                    <>
+                      <Spinner />
+                      {t("testing")}
+                    </>
+                  ) : (
+                    t("testConnection")
+                  )}
+                </button>
+                <button
+                  className={btnGhost}
+                  type="button"
+                  disabled={busy !== null}
+                  onClick={() => setShowProfileSave(true)}
+                >
+                  {t("profileSave")}
+                </button>
+              </div>
             </div>
           </section>
 
@@ -864,6 +913,292 @@ function Tip({ text, label }: { text: string; label: string }) {
   );
 }
 
+function ProfilesSection({
+  config,
+  t,
+  onConfigChange,
+  showSave,
+  onShowSaveChange,
+}: {
+  config: AppConfig;
+  t: (key: string) => string;
+  onConfigChange: (config: AppConfig) => void;
+  showSave: boolean;
+  onShowSaveChange: (show: boolean) => void;
+}) {
+  const [profiles, setProfiles] = useState<Record<string, AppConfig>>({});
+  const [activeProfile, setActiveProfile] = useState<string | null>(null);
+  const [newProfileName, setNewProfileName] = useState("");
+  const [busy, setBusy] = useState<"load" | "save" | "delete" | null>(null);
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const deleteRef = useRef<HTMLDialogElement>(null);
+  const [pendingDelete, setPendingDelete] = useState<string | null>(null);
+
+  const loadProfiles = useCallback(async () => {
+    try {
+      const state = await api.listProfiles();
+      setProfiles(state.profiles);
+      setActiveProfile(state.activeProfile);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadProfiles();
+  }, [loadProfiles]);
+
+  const handleSave = async () => {
+    const name = newProfileName.trim();
+    if (!name) return;
+    setBusy("save");
+    try {
+      const state = await api.saveProfile(name, config);
+      setProfiles(state.profiles);
+      setActiveProfile(state.activeProfile);
+      onShowSaveChange(false);
+      setNewProfileName("");
+    } catch {
+      /* ignore */
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const handleLoad = async (name: string) => {
+    setBusy("load");
+    try {
+      const loaded = await api.loadProfile(name);
+      onConfigChange(loaded);
+      setActiveProfile(name);
+    } catch {
+      /* ignore */
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const handleDelete = async (name: string) => {
+    setBusy("delete");
+    try {
+      const state = await api.deleteProfile(name);
+      setProfiles(state.profiles);
+      setActiveProfile(state.activeProfile);
+      deleteRef.current?.close();
+      setPendingDelete(null);
+    } catch {
+      /* ignore */
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const profileNames = Object.keys(profiles);
+
+  return (
+    <>
+      <button
+        type="button"
+        className={cx(btnGhost, "px-2.5")}
+        aria-label={t("profiles")}
+        aria-haspopup="dialog"
+        onClick={() => {
+          void loadProfiles();
+          dialogRef.current?.showModal();
+        }}
+      >
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          className="h-5 w-5"
+        >
+          <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2" />
+          <circle cx="12" cy="7" r="4" />
+        </svg>
+      </button>
+
+      <dialog
+        ref={dialogRef}
+        className="lang-dialog w-[min(400px,calc(100vw-48px))] max-h-[80vh] rounded-2xl border border-line bg-rail p-0 text-ink shadow-panel"
+        aria-labelledby="profiles-dialog-title"
+        onClick={(e) => {
+          if (e.target === e.currentTarget) e.currentTarget.close();
+        }}
+      >
+        <form method="dialog" className="grid gap-3 px-4 pt-[18px] pb-4">
+          <h3 id="profiles-dialog-title" className={headingSm}>
+            {t("profiles")}
+          </h3>
+
+          {profileNames.length === 0 ? (
+            <p className="text-sm text-muted">{t("profileNoProfiles")}</p>
+          ) : (
+            <div className="grid gap-2 overflow-y-auto max-h-[50vh]">
+              {profileNames.map((name) => (
+                <div
+                  key={name}
+                  className={cx(
+                    "flex items-center justify-between rounded-lg border px-3 py-2",
+                    name === activeProfile ? "border-copper bg-raised" : "border-line",
+                  )}
+                >
+                  <span className="text-sm">{name}</span>
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      className={iconBtn}
+                      aria-label={t("profileLoad")}
+                      disabled={busy !== null}
+                      onClick={() => void handleLoad(name)}
+                    >
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        className="h-4 w-4"
+                      >
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                        <polyline points="7 10 12 15 17 10" />
+                        <line x1="12" x2="12" y1="15" y2="3" />
+                      </svg>
+                    </button>
+                    <button
+                      type="button"
+                      className={iconBtn}
+                      aria-label={t("profileDelete")}
+                      disabled={busy !== null}
+                      onClick={() => {
+                        setPendingDelete(name);
+                        deleteRef.current?.showModal();
+                      }}
+                    >
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        className="h-4 w-4"
+                      >
+                        <path d="M3 6h18" />
+                        <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
+                        <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </form>
+      </dialog>
+
+      <dialog
+        ref={deleteRef}
+        className="lang-dialog w-[min(360px,calc(100vw-48px))] rounded-2xl border border-line bg-rail p-0 text-ink shadow-panel"
+        onClick={(e) => {
+          if (e.target === e.currentTarget) {
+            deleteRef.current?.close();
+            setPendingDelete(null);
+          }
+        }}
+      >
+        <form method="dialog" className="grid gap-3 px-4 pt-[18px] pb-4">
+          <h3 className={headingSm}>{t("profileDelete")}</h3>
+          <p className="text-sm text-muted">
+            {pendingDelete ? t("profileConfirmDelete").replace("{name}", pendingDelete) : ""}
+          </p>
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              className={btnGhost}
+              onClick={() => {
+                deleteRef.current?.close();
+                setPendingDelete(null);
+              }}
+            >
+              {t("cancel")}
+            </button>
+            <button
+              type="button"
+              className={cx(btnGhost, "text-bad")}
+              disabled={busy !== null}
+              onClick={() => pendingDelete && void handleDelete(pendingDelete)}
+            >
+              {busy === "delete" ? t("deleting") : t("profileDelete")}
+            </button>
+          </div>
+        </form>
+      </dialog>
+
+      {showSave && (
+        <dialog
+          open
+          className="lang-dialog w-[min(360px,calc(100vw-48px))] rounded-2xl border border-line bg-rail p-0 text-ink shadow-panel"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              onShowSaveChange(false);
+              setNewProfileName("");
+            }
+          }}
+        >
+          <form method="dialog" className="grid gap-3 px-4 pt-[18px] pb-4">
+            <h3 className={headingSm}>{t("profileSave")}</h3>
+            <label className={field}>
+              <span className="tracking-[0.02em]">{t("profileName")}</span>
+              <input
+                className={control}
+                type="text"
+                value={newProfileName}
+                placeholder={t("profileNamePlaceholder")}
+                onChange={(e) => setNewProfileName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    void handleSave();
+                  }
+                }}
+                autoFocus
+              />
+            </label>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                className={btnGhost}
+                onClick={() => {
+                  onShowSaveChange(false);
+                  setNewProfileName("");
+                }}
+              >
+                {t("cancel")}
+              </button>
+              <button
+                type="button"
+                className={cx(btnGhost, "text-copper")}
+                disabled={!newProfileName.trim() || busy !== null}
+                onClick={() => void handleSave()}
+              >
+                {busy === "save" ? t("saving") : t("save")}
+              </button>
+            </div>
+          </form>
+        </dialog>
+      )}
+    </>
+  );
+}
+
 function LanguageDialog({
   locale,
   onChange,
@@ -874,17 +1209,29 @@ function LanguageDialog({
   t: (key: string) => string;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
-  const current = LOCALES.find((item) => item.id === locale)?.native ?? locale;
   return (
     <>
       <button
         type="button"
-        className={btnGhost}
+        className={cx(btnGhost, "px-2.5")}
         aria-haspopup="dialog"
         aria-label={t("language")}
         onClick={() => ref.current?.showModal()}
       >
-        {current}
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          className="h-5 w-5"
+        >
+          <circle cx="12" cy="12" r="10" />
+          <path d="M2 12h20" />
+          <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+        </svg>
       </button>
       <dialog
         ref={ref}

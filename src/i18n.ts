@@ -148,6 +148,20 @@ const en: Dict = {
   "tip.reasoningAsText": "If the model returns a reasoning / thinking stream, show it as visible assistant text instead of hiding it.",
   "tip.debugDump": "Record request/response shapes in the injected runtime dump. For debugging only.",
   "tip.extraHeaders": "Extra HTTP headers as a JSON object, for example {\"X-Title\":\"ccm\"}.",
+
+  profiles: "Profiles",
+  profileSave: "Save as Profile",
+  profileLoad: "Load",
+  profileDelete: "Delete",
+  profileName: "Profile Name",
+  profileNamePlaceholder: "e.g. work-openai, local-ollama",
+  profileSaved: "Profile '{name}' saved",
+  profileLoaded: "Profile '{name}' loaded",
+  profileDeleted: "Profile '{name}' deleted",
+  profileConfirmDelete: "Delete profile '{name}'?",
+  profileNoProfiles: "No profiles saved yet",
+  cancel: "Cancel",
+  deleting: "Deleting…",
 };
 
 const zhCN: Dict = {
@@ -287,6 +301,20 @@ const zhCN: Dict = {
   "tip.reasoningAsText": "若模型返回思维链/推理流，把它当作可见的助手正文，而不是藏起来。",
   "tip.debugDump": "把请求/响应结构记进注入运行时的 dump，仅用于排查。",
   "tip.extraHeaders": "额外 HTTP 头，JSON 对象，例如 {\"X-Title\":\"ccm\"}。",
+
+  profiles: "配置方案",
+  profileSave: "存为配置方案",
+  profileLoad: "加载",
+  profileDelete: "删除",
+  profileName: "方案名称",
+  profileNamePlaceholder: "例如 work-openai、local-ollama",
+  profileSaved: "已保存方案 '{name}'",
+  profileLoaded: "已加载方案 '{name}'",
+  profileDeleted: "已删除方案 '{name}'",
+  profileConfirmDelete: "确认删除方案 '{name}'？",
+  profileNoProfiles: "暂无保存的配置方案",
+  cancel: "取消",
+  deleting: "删除中…",
 };
 
 const zhTW: Dict = {
@@ -426,6 +454,20 @@ const zhTW: Dict = {
   "tip.reasoningAsText": "若模型回傳思維鏈/推理流，把它當作可見的助手正文，而不是藏起來。",
   "tip.debugDump": "把請求/回應結構記進注入執行時的 dump，僅用於排查。",
   "tip.extraHeaders": "額外 HTTP 標頭，JSON 物件，例如 {\"X-Title\":\"ccm\"}。",
+
+  profiles: "配置方案",
+  profileSave: "存為配置方案",
+  profileLoad: "載入",
+  profileDelete: "刪除",
+  profileName: "方案名稱",
+  profileNamePlaceholder: "例如 work-openai、local-ollama",
+  profileSaved: "已儲存方案 '{name}'",
+  profileLoaded: "已載入方案 '{name}'",
+  profileDeleted: "已刪除方案 '{name}'",
+  profileConfirmDelete: "確認刪除方案 '{name}'？",
+  profileNoProfiles: "尚無儲存的配置方案",
+  cancel: "取消",
+  deleting: "刪除中…",
 };
 
 const TABLES: Record<Locale, Dict> = { en, "zh-CN": zhCN, "zh-TW": zhTW };
