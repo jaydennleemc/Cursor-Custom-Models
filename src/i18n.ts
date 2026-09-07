@@ -495,9 +495,11 @@ export function writeLocale(locale: Locale) {
   document.documentElement.lang = locale;
 }
 
-export function createT(locale: Locale) {
+export type TFn = (key: string, vars?: Record<string, string | number>) => string;
+
+export function createT(locale: Locale): TFn {
   const table = TABLES[locale] ?? en;
-  return (key: string, vars?: Record<string, string | number>) => {
+  return (key, vars) => {
     let text = table[key] ?? en[key] ?? key;
     if (vars) {
       for (const [name, value] of Object.entries(vars)) {
