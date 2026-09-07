@@ -63,4 +63,4 @@ export const mono =
   "overflow-hidden text-ellipsis whitespace-nowrap font-mono text-[11px] text-muted";
 
 export const iconBtn =
-  "min-h-10 min-w-9 cursor-pointer rounded-[10px] border border-line bg-transparent text-muted hover:border-bad hover:text-bad focus-visible:outline-2 focus-visible:outline-copper-2";
+  "inline-flex h-9 w-9 shrink-0 cursor-pointer appearance-none items-center justify-center rounded-[10px] border border-line bg-transparent p-0 leading-none text-muted hover:border-bad hover:text-bad focus-visible:outline-2 focus-visible:outline-copper-2 [&>svg]:block";
