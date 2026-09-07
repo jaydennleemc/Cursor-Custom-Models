@@ -1,5 +1,5 @@
 // ============================================================
-// 集成测试 v1.6.8: 模拟 Cursor transport + protobuf-es v2 消息类型 + Mock SSE
+// 集成测试 v1.6.9: 模拟 Cursor transport + protobuf-es v2 消息类型 + Mock SSE
 // 覆盖: 消息提取 / 模型映射 / SSE解析 / oneof包装响应构造 /
 //       CmdK编辑协议 / Agent包装响应 / streamStart / BiDi合并 / 透传 / 错误处理 /
 //       agent.v1.AgentService/Run 协议(Agents 界面: 心跳/textDelta/thinkingDelta/
@@ -1223,4 +1223,24 @@ async function runTests(T) {
     think39.indexOf("Let me write AGENTS.md") >= 0 &&
     !!started39 && !started39.value.toolCall.tool.value.result,
     JSON.stringify(inners39.map((x) => x && x.case)) + " text=" + text39 + " think=" + think39);
+
+  // T40: Agent 可见回复必须边收边发 textDelta。旧逻辑把整段 SSE 攒成 thinking
+  //     再在流结束后回放 textDelta，体感就是“不在流”（与上游快慢无关）。
+  slowMode = true;
+  sseScript = [{ delta: { content: "A" } }, { delta: { content: "B" } }, { delta: { content: "C" } }];
+  const t40 = Date.now();
+  r = await wrapped.stream(svcAgent, mAgentRun, null, null, {}, oneMsg(mkAgentReq("conv-t40", "流")));
+  let firstTextAt = -1;
+  const t40text = [];
+  for await (const m of r.message) {
+    const inner = agentInner(m);
+    if (inner && inner.case === "textDelta") {
+      if (firstTextAt < 0) firstTextAt = Date.now() - t40;
+      t40text.push(inner.value.text);
+    }
+  }
+  slowMode = false;
+  T("T40 agent textDelta 边收边发",
+    t40text.join("") === "ABC" && firstTextAt >= 0 && firstTextAt < 120,
+    "firstText=" + firstTextAt + "ms text=" + t40text.join(""));
 }

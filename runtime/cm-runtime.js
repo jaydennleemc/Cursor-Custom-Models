@@ -1,11 +1,17 @@
 /* ============================================================
- * Cursor Custom Models Runtime v1.6.8
+ * Cursor Custom Models Runtime v1.6.9
  * Injected at the end of three files (same code, separate processes):
  *   workbench.desktop.main.js / workbench.glass.main.js (renderer)
  *   extensionHostProcess.js (extension host — where HTTP actually terminates)
  * Intercepts the ConnectRPC transport and forwards Chat / Cmd+K / Agent
  * requests to the user-configured OpenAI-compatible API.
  *
+ * v1.6.9: Agent textDelta streams live (was buffered until SSE end, so the
+ *         visible reply dumped at once). Same-buffer tool_calls still hold
+ *         preamble as thinkingDelta. heartbeatWhile returns immediately when
+ *         the work Promise is already settled (no leftover 200ms timer).
+ *         Hold one SSE text token so a same-stream tool_call keeps preamble
+ *         as thinkingDelta (T39) without buffering the whole reply.
  * v1.6.8: heartbeatWhile races the work Promise instead of sleeping 200ms
  *         per SSE chunk (1.6.5 made long replies crawl). Tool-round preamble
  *         goes to thinkingDelta, not textDelta (stops "Let me write…" stacking).
@@ -951,27 +957,47 @@
     var decoder = new TextDecoder();
     var buf = "";
     var done = false;
+    function parseDelta(payload) {
+      var j = null;
+      try { j = JSON.parse(payload); } catch (e) { return null; }
+      var delta = j.choices && j.choices[0] && j.choices[0].delta;
+      if (!delta) return null;
+      var reasoning = delta.reasoning_content || delta.reasoning;
+      if (reasoning) return { type: "reasoning", text: String(reasoning) };
+      if (delta.tool_calls && delta.tool_calls.length) return { type: "toolCall", toolCalls: delta.tool_calls };
+      if (delta.content) return { type: "text", text: String(delta.content) };
+      return null;
+    }
+    function parseLine() {
+      while (true) {
+        var idx = buf.indexOf("\n");
+        if (idx < 0) return null;
+        var line = buf.slice(0, idx).replace(/\r$/, "");
+        buf = buf.slice(idx + 1);
+        if (line.indexOf("data:") !== 0) continue;
+        var payload = line.slice(5).trim();
+        if (payload === "[DONE]") { done = true; return { value: undefined, done: true }; }
+        var ev = parseDelta(payload);
+        if (ev) return { value: ev, done: false };
+      }
+    }
     return {
-      next: function () {
-        function parseLine() {
-          while (true) {
-            var idx = buf.indexOf("\n");
-            if (idx < 0) return null;
-            var line = buf.slice(0, idx).replace(/\r$/, "");
-            buf = buf.slice(idx + 1);
-            if (line.indexOf("data:") !== 0) continue;
-            var payload = line.slice(5).trim();
-            if (payload === "[DONE]") { done = true; return { value: undefined, done: true }; }
-            var j = null;
-            try { j = JSON.parse(payload); } catch (e) { continue; }
-            var delta = j.choices && j.choices[0] && j.choices[0].delta;
-            if (!delta) continue;
-            var reasoning = delta.reasoning_content || delta.reasoning;
-            if (reasoning) return { value: { type: "reasoning", text: String(reasoning) }, done: false };
-            if (delta.tool_calls && delta.tool_calls.length) return { value: { type: "toolCall", toolCalls: delta.tool_calls }, done: false };
-            if (delta.content) return { value: { type: "text", text: String(delta.content) }, done: false };
-          }
+      // True if unread buf already has a tool_calls SSE line (same TCP/HTTP chunk).
+      bufHasToolCall: function () {
+        var rest = buf;
+        while (true) {
+          var idx = rest.indexOf("\n");
+          if (idx < 0) return false;
+          var line = rest.slice(0, idx).replace(/\r$/, "");
+          rest = rest.slice(idx + 1);
+          if (line.indexOf("data:") !== 0) continue;
+          var payload = line.slice(5).trim();
+          if (payload === "[DONE]") return false;
+          var ev = parseDelta(payload);
+          if (ev && ev.type === "toolCall") return true;
         }
+      },
+      next: function () {
         if (done) return Promise.resolve({ value: undefined, done: true });
         var r = parseLine();
         if (r) return Promise.resolve(r);
@@ -1248,6 +1274,11 @@
       async function* heartbeatWhile(work, waitHint) {
         var settled = false, value, error;
         var workP = Promise.resolve(work).then(function (v) { value = v; settled = true; }, function (e) { error = e; settled = true; });
+        await Promise.resolve();
+        if (settled) {
+          if (error) throw error;
+          return value;
+        }
         var lastHb = Date.now();
         var hinted = false;
         var t0 = Date.now();
@@ -1322,6 +1353,14 @@
         var accText = "";
         var roundChunks = [];
         var pending = {}; // SSE index → {id,name,args}
+        var visibleSent = false;
+        var heldText = "";
+        function flushHeldThink() {
+          if (!heldText) return null;
+          var t = heldText;
+          heldText = "";
+          return thinkMsg(t);
+        }
         try {
           while (true) {
             var r;
@@ -1333,7 +1372,21 @@
               for (var fk = 0; fk < failMsgs3.length; fk++) yield failMsgs3[fk];
               return;
             }
-            if (r.done) break;
+            if (r.done) {
+              if (heldText) {
+                if (toolsOn && Object.keys(pending).length) {
+                  var tmDone = thinkMsg(heldText);
+                  if (tmDone) yield tmDone;
+                } else {
+                  finalText += heldText;
+                  var amDone = mk(ap.textField, { text: heldText });
+                  if (amDone) yield amDone;
+                  visibleSent = true;
+                }
+                heldText = "";
+              }
+              break;
+            }
             var part = r.value;
             if (!part) continue;
             if (part.type === "reasoning" && !CFG.sendReasoningAsText) {
@@ -1342,6 +1395,8 @@
               continue;
             }
             if (part.type === "toolCall") {
+              var tmTool = flushHeldThink();
+              if (tmTool) yield tmTool;
               var tcs = part.toolCalls || [];
               for (var ti = 0; ti < tcs.length; ti++) {
                 var tc = tcs[ti] || {};
@@ -1357,8 +1412,22 @@
             if (part.type === "text" && part.text) {
               accText += part.text;
               roundChunks.push(part.text);
-              var tmLive = thinkMsg(part.text);
-              if (tmLive) yield tmLive;
+              var holdThink = toolsOn && (Object.keys(pending).length > 0 || (it.bufHasToolCall && it.bufHasToolCall()));
+              if (holdThink) {
+                var tmPrev = flushHeldThink();
+                if (tmPrev) yield tmPrev;
+                var tmLive = thinkMsg(part.text);
+                if (tmLive) yield tmLive;
+              } else {
+                if (heldText) {
+                  finalText += heldText;
+                  var amPrev = mk(ap.textField, { text: heldText });
+                  if (amPrev) yield amPrev;
+                  visibleSent = true;
+                  heldText = "";
+                }
+                heldText = part.text;
+              }
             }
           }
         } finally {
@@ -1375,7 +1444,7 @@
             var tmP = thinkMsg("Using " + calls.map(function (c) { return c.name; }).join(", ") + "…");
             if (tmP) yield tmP;
           }
-        } else {
+        } else if (!visibleSent) {
           for (var ri = 0; ri < roundChunks.length; ri++) {
             finalText += roundChunks[ri];
             var am = mk(ap.textField, { text: roundChunks[ri] });
@@ -1858,7 +1927,7 @@
 
   g.__CURSOR_CM__ = {
     active: true,
-    version: "1.6.8",
+    version: "1.6.9",
     stats: stats,
     __dump: dumpStore,
     config: {

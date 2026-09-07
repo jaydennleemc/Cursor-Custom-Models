@@ -51,7 +51,7 @@ npm run tauri build
 
 Do not claim an Agent/Chat protocol fix works unless `npm run test:runtime` is green.
 
-App version lives in `package.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`, and `src/App.tsx` (`APP_VERSION`). Runtime protocol version is `g.__CURSOR_CM__.version` inside `cm-runtime.js` (currently `1.6.8`). The file banner `Cursor Custom Models Runtime vX.Y.Z` **must match** that exported version — T1 asserts this. App `1.0.x` and runtime `1.6.x` are independent; keep the four app-version locations in sync with each other.
+App version lives in `package.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`, and `src/App.tsx` (`APP_VERSION`). Runtime protocol version is `g.__CURSOR_CM__.version` inside `cm-runtime.js` (currently `1.6.9`). The file banner `Cursor Custom Models Runtime vX.Y.Z` **must match** that exported version — T1 asserts this. App `1.0.x` and runtime `1.6.x` are independent; keep the four app-version locations in sync with each other.
 
 ## How the Agent path works
 
@@ -85,7 +85,7 @@ These were learned the hard way after 1.0.2, mostly while fixing the “Editing 
 1. **`toolCallStarted` must not carry `result`.** An empty result on Started aborts the stream.
 2. **Never put an exec-channel message on `toolCallCompleted.result`.** Synthesize the UI type (`EditResult.success`, `ReadFileResult`, …) with `new ResultT(...)`. `instanceof WriteResult` on an `EditToolCall.result` is always wrong.
 3. **`heartbeatWhile` must `Promise.race` the work promise.** A 200ms sleep-then-check (1.6.5) added ~200ms **per SSE token**. Long replies looked hung; the UI showed nothing useful.
-4. **Preamble + `tool_calls` in the same upstream round:** stream that text as `thinkingDelta`, flush as `textDelta` **only** when the round has no tools. Otherwise the chat fills with “Let me write AGENTS.md” every tool round, and a failed/timed-out edit makes it look like Cursor is looping.
+4. **Preamble + `tool_calls` in the same upstream round:** hold one SSE text token, then flush as `thinkingDelta` if the next event is `tool_calls`. Pure-text rounds flush `textDelta` live (one token behind). Do not buffer the whole reply until SSE end — that makes Agent look like it is not streaming.
 5. **Upstream errors** on Agent must become `textDelta` + `turnEnded`, not a thrown error (no `turnEnded` → Connection failed).
 6. **Do not intercept** `StreamUnifiedChatWithToolsSSE` / Poll. Those are not the content-bearing channel.
 7. Connect-es consumer reads `{ message, header, trailer }`, not v2 `output`.
@@ -96,7 +96,7 @@ These were learned the hard way after 1.0.2, mostly while fixing the “Editing 
 | User report | First place to look |
 | --- | --- |
 | Cursor repeats “Let me read / Let me write…” | Preamble leaked into `textDelta`, or Completed used the exec type so the stream died and Cursor retried the turn. |
-| Very slow, long stretches of “nothing happening” | `heartbeatWhile` polling delay; missing `thinkingDelta` while waiting on fetch/tools; tool timeout 30s because exec never ran. |
+| Very slow, long stretches of “nothing happening” | `heartbeatWhile` polling delay; Agent `textDelta` buffered until SSE end (fixed in 1.6.9); missing `thinkingDelta` while waiting on fetch/tools; tool timeout 30s because exec never ran. |
 | Stuck “Editing …” spinner | `toolCallCompleted` missing UI `EditResult.success.after_full_file_content`. |
 | Connection failed after a few tools | Result on Started, or exec `WriteResult` on Completed. |
 | “You’re paused until usage resets” | Usage-gate unary bypass (`blockUsageGate`). |
