@@ -49,6 +49,9 @@ jobs:
 
       # Do not pass empty APPLE_CERTIFICATE: Tauri still tries `security import` and fails.
       # Same as freeway-desktop: ad-hoc identity "-" and no keychain cert.
+      # tauri-action@v0 picks pnpm if pnpm-lock.yaml is present. This repo is npm
+      # (package-lock.json); do not commit a pnpm lockfile or Windows CI dies with
+      # "'pnpm' is not recognized" (v1.0.7 first attempt).
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
