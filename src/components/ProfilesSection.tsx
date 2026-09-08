@@ -61,7 +61,8 @@ export function ProfilesSection({
     try {
       const loaded = await api.loadProfile(name);
       onConfigChange(loaded);
-      setActiveProfile(name);
+      const state = await api.setActiveProfile(name);
+      setActiveProfile(state.activeProfile);
       dialogRef.current?.close();
     } catch {
       /* ignore */

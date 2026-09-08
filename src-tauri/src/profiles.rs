@@ -1,7 +1,7 @@
 use crate::config::{config_dir_path, AppConfig};
 use crate::error::{AppError, Result};
+use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::fs;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -10,14 +10,14 @@ pub struct ProfilesState {
     #[serde(default)]
     pub active_profile: Option<String>,
     #[serde(default)]
-    pub profiles: HashMap<String, AppConfig>,
+    pub profiles: IndexMap<String, AppConfig>,
 }
 
 impl Default for ProfilesState {
     fn default() -> Self {
         Self {
             active_profile: None,
-            profiles: HashMap::new(),
+            profiles: IndexMap::new(),
         }
     }
 }
