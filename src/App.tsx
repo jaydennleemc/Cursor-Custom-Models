@@ -3,7 +3,7 @@ import { Settings } from "./components/Settings";
 import { useGateway, type ReadyGateway } from "./hooks/useGateway";
 import { rail, shell, stage } from "./ui";
 
-const APP_VERSION = "1.0.7";
+const APP_VERSION = "1.0.8";
 
 export default function App() {
   const gw = useGateway();

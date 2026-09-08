@@ -29,7 +29,7 @@ fn log_path() -> PathBuf {
 fn cors_headers() -> Vec<Header> {
     vec![
         Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap(),
-        Header::from_bytes(&b"Access-Control-Allow-Methods"[..], &b"POST, OPTIONS"[..]).unwrap(),
+        Header::from_bytes(&b"Access-Control-Allow-Methods"[..], &b"GET, POST, OPTIONS"[..]).unwrap(),
         Header::from_bytes(&b"Access-Control-Allow-Headers"[..], &b"*"[..]).unwrap(),
         Header::from_bytes(&b"Access-Control-Allow-Private-Network"[..], &b"true"[..]).unwrap(),
         Header::from_bytes(&b"Connection"[..], &b"close"[..]).unwrap(),
@@ -74,9 +74,40 @@ fn append_log(body: &str) {
     }
 }
 
+fn request_path(request: &tiny_http::Request) -> &str {
+    request.url().split('?').next().unwrap_or("/")
+}
+
+fn live_config_json() -> String {
+    let mut cfg = config::load_config().unwrap_or_default();
+    if let Ok(px) = config::load_proxy() {
+        if let Some((origin, rewritten)) = crate::proxy::cors_proxy_rewrite(&cfg.base_url, px.port) {
+            let _ = crate::proxy::ensure_running(origin, px.port);
+            cfg.base_url = rewritten;
+        }
+    }
+    cfg.to_inject_json(port()).unwrap_or_else(|_| "{}".into())
+}
+
+fn respond_json(request: tiny_http::Request, body: String) {
+    let mut res = Response::from_string(body).with_status_code(StatusCode(200));
+    if let Ok(h) = Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]) {
+        res = res.with_header(h);
+    }
+    for h in cors_headers() {
+        res = res.with_header(h);
+    }
+    let _ = request.respond(res);
+}
+
 fn handle(mut request: tiny_http::Request) {
     if request.method() == &Method::Options {
         respond(request, 204);
+        return;
+    }
+    let path = request_path(&request);
+    if request.method() == &Method::Get && (path == "/config" || path == "/config/") {
+        respond_json(request, live_config_json());
         return;
     }
     if request.method() != &Method::Post {
@@ -167,6 +198,23 @@ mod tests {
         assert!(
             text.contains("runtime active"),
             "expected log file to contain POST body, got {text:?}"
+        );
+
+        let mut cfg_stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        write!(
+            cfg_stream,
+            "GET /config HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+        )
+        .unwrap();
+        cfg_stream.flush().unwrap();
+        let _ = cfg_stream.set_read_timeout(Some(Duration::from_secs(2)));
+        let mut cfg_buf = Vec::new();
+        let _ = cfg_stream.read_to_end(&mut cfg_buf);
+        let cfg_raw = String::from_utf8_lossy(&cfg_buf);
+        let cfg_body = cfg_raw.split("\r\n\r\n").nth(1).unwrap_or("");
+        assert!(
+            cfg_body.contains("\"logPort\"") && cfg_body.contains("\"baseUrl\""),
+            "GET /config body: {cfg_body:?}"
         );
     }
 }
