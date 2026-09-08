@@ -24,7 +24,6 @@ export interface AppConfig {
   agentTools: boolean;
   agentSystemPrompt: string;
   agentToolTimeoutMs: number;
-  agentMaxToolRounds: number;
   agentContext: AgentContext;
   debugDump: boolean;
 }

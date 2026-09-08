@@ -71,8 +71,6 @@ pub struct AppConfig {
     pub agent_system_prompt: String,
     #[serde(default = "default_timeout")]
     pub agent_tool_timeout_ms: u32,
-    #[serde(default = "default_rounds")]
-    pub agent_max_tool_rounds: u32,
     #[serde(default)]
     pub agent_context: AgentContext,
     #[serde(default)]
@@ -96,7 +94,6 @@ impl Default for AppConfig {
             agent_tools: true,
             agent_system_prompt: String::new(),
             agent_tool_timeout_ms: default_timeout(),
-            agent_max_tool_rounds: default_rounds(),
             agent_context: AgentContext::default(),
             debug_dump: false,
         }
@@ -157,9 +154,6 @@ fn default_layout_lines() -> u32 {
 }
 fn default_timeout() -> u32 {
     30_000
-}
-fn default_rounds() -> u32 {
-    8
 }
 fn default_proxy_upstream() -> String {
     "https://open.bigmodel.cn".into()

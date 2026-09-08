@@ -586,7 +586,7 @@
    * ============================================================ */
   var AGENT_TOOLS_ON = CFG.agentTools !== false;       // 默认开启
   var AGENT_TOOL_TIMEOUT = CFG.agentToolTimeoutMs || 30000;
-  var AGENT_MAX_ROUNDS = CFG.agentMaxToolRounds || 8;
+  // Agent/Chat tool-loop rounds: unlimited — break on natural stop (no tool calls or tools off)
   var AGENT_HB_MS = (CFG.agentHeartbeatMs > 0) ? CFG.agentHeartbeatMs : 2000;
   // OpenAI 函数名 → agent.v1 映射(仅保留有独立 exec 通道的工具: glob/semantic 无 result 通道已移除)
   var AGENT_TOOL_MAP = {
@@ -957,18 +957,25 @@
     var decoder = new TextDecoder();
     var buf = "";
     var done = false;
+    var queued = []; // buffer for extra events when one SSE delta has both reasoning+content
     function parseDelta(payload) {
       var j = null;
       try { j = JSON.parse(payload); } catch (e) { return null; }
       var delta = j.choices && j.choices[0] && j.choices[0].delta;
       if (!delta) return null;
+      var events = [];
       var reasoning = delta.reasoning_content || delta.reasoning;
-      if (reasoning) return { type: "reasoning", text: String(reasoning) };
-      if (delta.tool_calls && delta.tool_calls.length) return { type: "toolCall", toolCalls: delta.tool_calls };
-      if (delta.content) return { type: "text", text: String(delta.content) };
-      return null;
+      if (reasoning) events.push({ type: "reasoning", text: String(reasoning) });
+      if (delta.tool_calls && delta.tool_calls.length) events.push({ type: "toolCall", toolCalls: delta.tool_calls });
+      if (delta.content) events.push({ type: "text", text: String(delta.content) });
+      if (!events.length) return null;
+      if (events.length === 1) return events[0];
+      // Multiple fields in one delta: return first, queue the rest
+      for (var i = 1; i < events.length; i++) queued.push(events[i]);
+      return events[0];
     }
     function parseLine() {
+      if (queued.length) return { value: queued.shift(), done: false };
       while (true) {
         var idx = buf.indexOf("\n");
         if (idx < 0) return null;
@@ -983,6 +990,7 @@
     }
     return {
       // True if unread buf already has a tool_calls SSE line (same TCP/HTTP chunk).
+      // Inline check (no parseDelta) to avoid side-effects on the queued buffer.
       bufHasToolCall: function () {
         var rest = buf;
         while (true) {
@@ -993,8 +1001,11 @@
           if (line.indexOf("data:") !== 0) continue;
           var payload = line.slice(5).trim();
           if (payload === "[DONE]") return false;
-          var ev = parseDelta(payload);
-          if (ev && ev.type === "toolCall") return true;
+          try {
+            var j = JSON.parse(payload);
+            var d = j.choices && j.choices[0] && j.choices[0].delta;
+            if (d && d.tool_calls && d.tool_calls.length) return true;
+          } catch (e) { /* noop */ }
         }
       },
       next: function () {
@@ -1330,7 +1341,7 @@
       var watermark = collected.length; // 工具结果只从 watermark 之后匹配
       var callSeq = 0;
 
-      for (var round = 0; round < AGENT_MAX_ROUNDS; round++) {
+      for (var round = 0; ; round++) {
         var res;
         try {
           res = yield* heartbeatWhile(callUpstream(messages, info.model, signal, tools), "Waiting for model…");
@@ -1609,7 +1620,7 @@
       var finalText = "";
       var watermark = collected.length;
       var callSeq = 0;
-      for (var round = 0; round < AGENT_MAX_ROUNDS; round++) {
+      for (var round = 0; ; round++) {
         var res;
         try {
           res = await callUpstream(messages, info.model, signal, tools.length ? tools : null);

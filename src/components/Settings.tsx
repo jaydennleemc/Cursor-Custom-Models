@@ -366,22 +366,6 @@ export function Settings({ gw }: { gw: ReadyGateway }) {
                   }
                 />
               </label>
-              <label className={field}>
-                <span className="inline-flex items-center gap-1">
-                  {t("maxRounds")}
-                  <Tip text={t("tip.maxRounds")} label={t("help")} />
-                </span>
-                <input
-                  className={control}
-                  type="number"
-                  min={1}
-                  max={32}
-                  value={config.agentMaxToolRounds}
-                  onChange={(e) =>
-                    setConfig({ ...config, agentMaxToolRounds: Number(e.target.value) || 8 })
-                  }
-                />
-              </label>
             </div>
             <div className="grid gap-2">
               {(

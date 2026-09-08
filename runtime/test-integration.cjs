@@ -1243,4 +1243,22 @@ async function runTests(T) {
   T("T40 agent textDelta 边收边发",
     t40text.join("") === "ABC" && firstTextAt >= 0 && firstTextAt < 120,
     "firstText=" + firstTextAt + "ms text=" + t40text.join(""));
+
+  // T41: reasoning_content + content in the SAME delta — both must survive.
+  sseScript = [{ delta: { reasoning_content: "想", content: "答" } }];
+  r = await wrapped.stream(svcAgent, mAgentRun, null, null, {}, oneMsg(mkAgentReq("conv-t41", "问")));
+  const t41 = (await collect(r.message)).map(agentInner);
+  const t41Think = t41.filter((x) => x && x.case === "thinkingDelta").map((x) => x.value.text).join("");
+  const t41Text = t41.filter((x) => x && x.case === "textDelta").map((x) => x.value.text).join("");
+  T("T41 reasoning+content同delta两者都保留",
+    t41Think.indexOf("想") >= 0 && t41Text.indexOf("答") >= 0,
+    "think=" + t41Think + " text=" + t41Text);
+
+  // T42: same delta for Chat path — reasoning + content both survive.
+  sseScript = [{ delta: { reasoning_content: "想", content: "答" } }];
+  r = await wrapped.stream(svcChat, mUnified, null, null, {}, oneMsg(chatReq));
+  const t42 = await collect(r.message);
+  T("T42 Chat reasoning+content同delta两者都保留",
+    t42[0] && t42[0].thinking instanceof ThinkingT && t42[0].thinking.text === "想" && t42[1] && t42[1].text === "答",
+    JSON.stringify(t42.map((m) => (m && m.thinking && m.thinking.text) ? "think:" + m.thinking.text : (m && m.text) || "?")));
 }
