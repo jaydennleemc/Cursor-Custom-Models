@@ -14,9 +14,74 @@ use profiles::ProfilesState;
 use connectivity::ConnectionTest;
 use cursor::TargetStatus;
 use serde::Serialize;
+use std::io::Write;
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+use std::thread;
+use std::time::Duration;
 #[cfg(target_os = "macos")]
 use tauri::Manager;
+
+static LOG_SERVER_PORT: Mutex<u16> = Mutex::new(0);
+static LOG_SERVER_RUNNING: AtomicBool = AtomicBool::new(false);
+
+pub fn log_server_port() -> u16 {
+    *LOG_SERVER_PORT.lock().expect("log port mutex")
+}
+
+fn start_log_server() {
+    if LOG_SERVER_RUNNING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    thread::spawn(|| {
+        let listener = match std::net::TcpListener::bind("127.0.0.1:0") {
+            Ok(l) => {
+                let port = l.local_addr().unwrap().port();
+                *LOG_SERVER_PORT.lock().expect("log port mutex") = port;
+                eprintln!("[Gateway] log server listening on 127.0.0.1:{port}");
+                l
+            }
+            Err(e) => {
+                eprintln!("[Gateway] log server bind failed: {e}");
+                LOG_SERVER_RUNNING.store(false, Ordering::SeqCst);
+                return;
+            }
+        };
+        for stream in listener.incoming() {
+            if !LOG_SERVER_RUNNING.load(Ordering::SeqCst) {
+                break;
+            }
+            if let Ok(mut s) = stream {
+                let _ = s.set_read_timeout(Some(Duration::from_secs(5)));
+                let mut buf = [0u8; 65536];
+                if let Ok(n) = std::io::Read::read(&mut s, &mut buf) {
+                    if let Ok(raw) = std::str::from_utf8(&buf[..n]) {
+                        // Extract body after \r\n\r\n
+                        if let Some(body_start) = raw.find("\r\n\r\n") {
+                            let body = raw[body_start + 4..].trim();
+                            if !body.is_empty() {
+                                let log_path = config::log_file_path().unwrap_or_default();
+                                if let Ok(mut f) = std::fs::OpenOptions::new()
+                                    .create(true)
+                                    .append(true)
+                                    .open(&log_path)
+                                {
+                                    let _ = writeln!(f, "{body}");
+                                }
+                            }
+                        }
+                    }
+                }
+                // Send minimal HTTP response so the client doesn't hang
+                let _ = std::io::Write::write_all(
+                    &mut s,
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                );
+            }
+        }
+    });
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -177,7 +242,7 @@ async fn test_connection(config: AppConfig) -> Result<ConnectionTest, String> {
         .map_err(Into::into)
 }
 
-fn prepare_injected_config(config: &AppConfig, log: &mut Vec<String>) -> Result<AppConfig, String> {
+fn prepare_injected_config(config: &AppConfig, log: &mut Vec<String>) -> Result<String, String> {
     let mut inject = config.clone();
     let px = config::load_proxy()?;
     if let Some((origin, rewritten)) = proxy::cors_proxy_rewrite(&inject.base_url, px.port) {
@@ -185,7 +250,8 @@ fn prepare_injected_config(config: &AppConfig, log: &mut Vec<String>) -> Result<
         log.push(format!("proxy  {rewritten}  →  {origin}"));
         inject.base_url = rewritten;
     }
-    Ok(inject)
+    let port = log_server_port();
+    inject.to_inject_json(port).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -254,10 +320,39 @@ fn open_config_dir() -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+fn open_log_file() -> Result<String, String> {
+    let path = config::log_file_path()?;
+    // Ensure the file exists so the reveal command doesn't fail
+    if !path.exists() {
+        std::fs::write(&path, "").map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .args(["-R", &path.display().to_string()])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("explorer")
+            .args(["/select,", &path.display().to_string()])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = path;
+    }
+    Ok(path.display().to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .setup(|_app| {
+            start_log_server();
             if let (Ok(cfg), Ok(px)) = (config::load_config(), config::load_proxy()) {
                 if let Some((origin, _)) = proxy::cors_proxy_rewrite(&cfg.base_url, px.port) {
                     let _ = proxy::ensure_running(origin, px.port);
@@ -277,6 +372,7 @@ pub fn run() {
             stop_proxy,
             default_config,
             open_config_dir,
+            open_log_file,
             open_cursor,
             quit_cursor,
             test_connection,

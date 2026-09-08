@@ -30,3 +30,4 @@ export const setActiveProfile = (name: string) =>
   invoke<ProfilesState>("set_active_profile", { name });
 export const openCursor = () => invoke<string>("open_cursor");
 export const quitCursor = () => invoke<string>("quit_cursor");
+export const openLogFile = () => invoke<string>("open_log_file");

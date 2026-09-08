@@ -1,5 +1,4 @@
 use crate::checksum;
-use crate::config::AppConfig;
 use crate::cursor::CursorInstall;
 use crate::error::{AppError, Result};
 use regex::Regex;
@@ -219,8 +218,8 @@ pub fn apply_anchors(content: &str) -> AnchorResult {
     }
 }
 
-pub fn patch_install(install: &CursorInstall, config: &AppConfig, log: &mut Vec<String>) -> Result<()> {
-    let runtime = inject_runtime(&config.to_inject_json()?)?;
+pub fn patch_install(install: &CursorInstall, injected_json: &str, log: &mut Vec<String>) -> Result<()> {
+    let runtime = inject_runtime(injected_json)?;
     if !runtime.contains(MARKER) {
         return Err(AppError::msg("Runtime inject failed: marker missing"));
     }

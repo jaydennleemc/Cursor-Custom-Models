@@ -7,13 +7,13 @@ import { btnGhost, control, cx, field, headingSm, iconBtn } from "../ui";
 export function ProfilesSection({
   config,
   t,
-  onConfigChange,
+  syncConfig,
   showSave,
   onShowSaveChange,
 }: {
   config: AppConfig;
   t: TFn;
-  onConfigChange: (config: AppConfig) => void;
+  syncConfig: (config: AppConfig) => void;
   showSave: boolean;
   onShowSaveChange: (show: boolean) => void;
 }) {
@@ -60,7 +60,7 @@ export function ProfilesSection({
     setBusy("load");
     try {
       const loaded = await api.loadProfile(name);
-      onConfigChange(loaded);
+      syncConfig(loaded);
       const state = await api.setActiveProfile(name);
       setActiveProfile(state.activeProfile);
       dialogRef.current?.close();

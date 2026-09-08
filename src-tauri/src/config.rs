@@ -99,8 +99,15 @@ impl AppConfig {
         self.api_key.to_ascii_lowercase().contains("your-")
     }
 
-    pub fn to_inject_json(&self) -> Result<String> {
-        Ok(serde_json::to_string(self)?)
+    pub fn to_inject_json(&self, log_port: u16) -> Result<String> {
+        let mut v = serde_json::to_value(self)?;
+        if let Some(obj) = v.as_object_mut() {
+            obj.insert(
+                "logPort".into(),
+                serde_json::Value::Number(log_port.into()),
+            );
+        }
+        Ok(serde_json::to_string(&v)?)
     }
 }
 
@@ -172,6 +179,11 @@ pub fn config_file_path() -> Result<PathBuf> {
 
 pub fn proxy_file_path() -> Result<PathBuf> {
     Ok(config_dir_path()?.join("proxy.json"))
+}
+
+pub fn log_file_path() -> Result<PathBuf> {
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    Ok(config_dir_path()?.join(format!("runtime-{today}.log")))
 }
 
 pub fn load_config() -> Result<AppConfig> {

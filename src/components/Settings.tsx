@@ -43,6 +43,7 @@ export function Settings({ gw }: { gw: ReadyGateway }) {
     t,
     banner,
     applyModel,
+    syncConfig,
   } = gw;
 
   const preset = PROVIDERS.find((p) => p.id === providerId);
@@ -73,6 +74,29 @@ export function Settings({ gw }: { gw: ReadyGateway }) {
               className="h-5 w-5"
             >
               <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            className={cx(btnGhost, "px-2.5")}
+            aria-label={t("openLog")}
+            onClick={() => void api.openLogFile()}
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              className="h-5 w-5"
+            >
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+              <polyline points="14 2 14 8 20 8" />
+              <line x1="16" y1="13" x2="8" y2="13" />
+              <line x1="16" y1="17" x2="8" y2="17" />
+              <polyline points="10 9 9 9 8 9" />
             </svg>
           </button>
           <button
@@ -123,7 +147,7 @@ export function Settings({ gw }: { gw: ReadyGateway }) {
             <ProfilesSection
               config={config}
               t={t}
-              onConfigChange={setConfig}
+              syncConfig={syncConfig}
               showSave={showProfileSave}
               onShowSaveChange={setShowProfileSave}
             />

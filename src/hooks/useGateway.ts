@@ -43,6 +43,7 @@ export type Gateway = {
   logRef: RefObject<HTMLPreElement | null>;
   patchedCount: number;
   applyModel: (model: string) => void;
+  syncConfig: (config: AppConfig) => void;
   onSave: () => Promise<void>;
   onTestConnection: () => Promise<void>;
   onTogglePatch: () => Promise<void>;
@@ -129,6 +130,15 @@ export function useGateway(): Gateway {
     } finally {
       setBusy(null);
     }
+  }
+
+  function syncConfig(cfg: AppConfig) {
+    setConfig(cfg);
+    const matched = matchProvider(cfg.baseUrl);
+    setProviderId(matched.id);
+    setModelCustom(!matched.models.includes(cfg.defaultModel));
+    setMapping(toPairs(cfg.modelMapping));
+    setHeadersText(JSON.stringify(cfg.extraHeaders ?? {}, null, 2));
   }
 
   function applyModel(model: string) {
@@ -255,6 +265,7 @@ export function useGateway(): Gateway {
     logRef,
     patchedCount,
     applyModel,
+    syncConfig,
     onSave,
     onTestConnection,
     onTogglePatch,

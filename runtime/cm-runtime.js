@@ -1,11 +1,13 @@
 /* ============================================================
- * Cursor Custom Models Runtime v1.6.9
+ * Cursor Custom Models Runtime v1.6.10
  * Injected at the end of three files (same code, separate processes):
  *   workbench.desktop.main.js / workbench.glass.main.js (renderer)
  *   extensionHostProcess.js (extension host — where HTTP actually terminates)
  * Intercepts the ConnectRPC transport and forwards Chat / Cmd+K / Agent
  * requests to the user-configured OpenAI-compatible API.
  *
+ * v1.6.10: Log via HTTP to Gateway log server instead of require("fs")
+ *          (fixes empty log file when extension host runs as ES module).
  * v1.6.9: Agent textDelta streams live (was buffered until SSE end, so the
  *         visible reply dumped at once). Same-buffer tool_calls still hold
  *         preamble as thinkingDelta. heartbeatWhile returns immediately when
@@ -81,11 +83,46 @@
   }
 
   var TAG = "[CustomModels]";
+  var _logPort = (CFG && CFG.logPort) || 0;
+  var _logQueue = [];
+  var _logTimer = null;
+
+  function _flushLog() {
+    if (!_logPort || _logQueue.length === 0) return;
+    var batch = _logQueue.splice(0);
+    try {
+      var body = batch.join("\n") + "\n";
+      // fire-and-forget: don't block on log delivery
+      fetch("http://127.0.0.1:" + _logPort + "/log", { method: "POST", body: body }).catch(function () { /* noop */ });
+    } catch (e) { /* noop */ }
+  }
+
+  function _appendFile(line) {
+    if (!_logPort) return;
+    _logQueue.push(line);
+    if (!_logTimer) {
+      _logTimer = setTimeout(function () {
+        _logTimer = null;
+        _flushLog();
+      }, 500);
+    }
+  }
+
+  function _fmtLog(args) {
+    try {
+      var now = new Date().toISOString();
+      var parts = [now, TAG];
+      for (var i = 0; i < args.length; i++) { parts.push(String(args[i])); }
+      return parts.join(" ");
+    } catch (e) { return ""; }
+  }
+
   function log() {
     try {
       var args = Array.prototype.slice.call(arguments);
       args.unshift(TAG);
       console.log.apply(console, args);
+      _appendFile(_fmtLog(arguments));
     } catch (e) { /* noop */ }
   }
   function err() {
@@ -93,6 +130,7 @@
       var args = Array.prototype.slice.call(arguments);
       args.unshift(TAG);
       console.error.apply(console, args);
+      _appendFile(_fmtLog(arguments));
     } catch (e) { /* noop */ }
   }
 
@@ -1877,7 +1915,7 @@
 
   g.__CURSOR_CM__ = {
     active: true,
-    version: "1.6.9",
+    version: "1.6.10",
     stats: stats,
     config: {
       baseUrl: CFG.baseUrl,

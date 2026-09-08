@@ -1,5 +1,5 @@
 // ============================================================
-// 集成测试 v1.6.9: 模拟 Cursor transport + protobuf-es v2 消息类型 + Mock SSE
+// 集成测试 v1.6.10: 模拟 Cursor transport + protobuf-es v2 消息类型 + Mock SSE
 // 覆盖: 消息提取 / 模型映射 / SSE解析 / oneof包装响应构造 /
 //       CmdK编辑协议 / Agent包装响应 / streamStart / BiDi合并 / 透传 / 错误处理 /
 //       agent.v1.AgentService/Run 协议(Agents 界面: 心跳/textDelta/thinkingDelta/
