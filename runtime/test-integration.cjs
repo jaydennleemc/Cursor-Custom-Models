@@ -481,7 +481,7 @@ async function runTests(T) {
       defaultModel: "deepseek-v4-flash",
       modelMapping: { "*": "deepseek-v4-flash" },
       interceptMethods: ["aiserver.v1.ChatService/StreamUnifiedChat"],
-      temperature: null, maxTokens: null, extraHeaders: {}, sendReasoningAsText: false
+      extraHeaders: {}
     };
     const srcSlow = fs.readFileSync(path.join(__dirname, "cm-runtime.js"), "utf8")
       .replace("__CM_CONFIG_PLACEHOLDER__", JSON.stringify(cfgSlow));
@@ -537,7 +537,7 @@ async function runTests(T) {
       "aiserver.v1.CmdKService/StreamCmdK",
       "agent.v1.AgentService/Run"
     ],
-    temperature: null, maxTokens: null, extraHeaders: {}, sendReasoningAsText: false
+    extraHeaders: {}
   };
 
   const runtimeSrc = fs.readFileSync(path.join(__dirname, "cm-runtime.js"), "utf8")
@@ -930,22 +930,6 @@ async function runTests(T) {
     cm.stats.agentDebug && cm.stats.agentDebug.rcFrom === "userMessageAction" &&
     cm.stats.agentDebug.sysLen > 200,
     JSON.stringify(cm.stats.agentDebug));
-
-  // T34: agentSystemPrompt 配置注入 -- 纯透传模式下唯一自定义入口(默认空)
-  sseScript = [{ delta: { content: "ok" } }];
-  const cmP = new Function(runtimeSrc.replace(JSON.stringify(cfg), JSON.stringify({ ...cfg, agentSystemPrompt: "你是定制助手" })) + "\n;return globalThis.__CURSOR_CM__;")();
-  const wP = cmP.wrap(origTransport);
-  const rP = await wP.stream(svcAgent, mAgentRun, null, null, {}, oneMsg(mkAgentReq("conv-t34", "hi", {
-    requestContext: new AgentRequestContextT({ env: new AgentEnvT({ osVersion: "win32 10.0.28000" }) })
-  })));
-  await collect(rP.message);
-  const sys34 = lastRequestBody.messages[0];
-  T("T34 agentSystemPrompt配置注入(纯透传自定义入口)",
-    sys34.role === "system" &&
-    sys34.content.indexOf("你是定制助手") === 0 &&
-    sys34.content.includes("OS: win32 10.0.28000") &&
-    !sys34.content.includes("You are an AI coding agent"),
-    JSON.stringify(sys34.content.slice(0, 120)));
 
   // ================= Chat 界面 clientSideToolV2 工具循环 (v1.6.0) =================
   // BiDi 在首个有效请求后 50ms 放行; 工具结果须在 watermark 之后到达, 否则会被跳过

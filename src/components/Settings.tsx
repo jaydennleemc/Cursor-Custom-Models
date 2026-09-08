@@ -234,6 +234,17 @@ export function Settings({ gw }: { gw: ReadyGateway }) {
                 onChange={(e) => setConfig({ ...config, apiKey: e.target.value })}
               />
             </label>
+            <label className={field}>
+              <span className="inline-flex items-center gap-1">
+                {t("extraHeaders")}
+                <Tip text={t("tip.extraHeaders")} label={t("help")} />
+              </span>
+              <textarea
+                className={textareaControl}
+                value={headersText}
+                onChange={(e) => setHeadersText(e.target.value)}
+              />
+            </label>
             <div className="flex items-center gap-2 justify-self-start">
               <button
                 className={cx(btnGhost, busy === "test" && "disabled:opacity-100")}
@@ -268,89 +279,86 @@ export function Settings({ gw }: { gw: ReadyGateway }) {
             {t("advanced")}
             <span className="inline-block h-[7px] w-[7px] rotate-45 border-r-[1.5px] border-b-[1.5px] border-muted transition-transform duration-200 group-open:rotate-[225deg] motion-reduce:transition-none" />
           </summary>
-          <div className="grid gap-3">
-            <h3 className={headingCopper}>
-              {t("mapping")}
-              <Tip text={t("tip.mapping")} label={t("help")} />
-            </h3>
-            {mapping.map((row, index) => (
-              <div className="grid grid-cols-[1fr_1fr_36px] gap-2" key={index}>
-                <input
-                  className={control}
-                  type="text"
-                  aria-label={t("cursorModel")}
-                  placeholder={t("cursorModel")}
-                  value={row.k}
-                  onChange={(e) =>
-                    setMapping(mapping.map((item, i) => (i === index ? { ...item, k: e.target.value } : item)))
-                  }
-                />
-                <input
-                  className={control}
-                  type="text"
-                  aria-label={t("upstreamModel")}
-                  placeholder={t("upstreamModel")}
-                  value={row.v}
-                  onChange={(e) =>
-                    setMapping(mapping.map((item, i) => (i === index ? { ...item, v: e.target.value } : item)))
-                  }
-                />
+          <div className="grid gap-4">
+            {/* Model Mapping */}
+            <div className="rounded-lg border border-line p-3">
+              <h3 className={cx(headingCopper, "mb-2")}>
+                {t("mapping")}
+                <Tip text={t("tip.mapping")} label={t("help")} />
+              </h3>
+              <div className="grid gap-2">
+                {mapping.map((row, index) => (
+                  <div className="grid grid-cols-[1fr_1fr_36px] gap-2" key={index}>
+                    <input
+                      className={control}
+                      type="text"
+                      aria-label={t("cursorModel")}
+                      placeholder={t("cursorModel")}
+                      value={row.k}
+                      onChange={(e) =>
+                        setMapping(mapping.map((item, i) => (i === index ? { ...item, k: e.target.value } : item)))
+                      }
+                    />
+                    <input
+                      className={control}
+                      type="text"
+                      aria-label={t("upstreamModel")}
+                      placeholder={t("upstreamModel")}
+                      value={row.v}
+                      onChange={(e) =>
+                        setMapping(mapping.map((item, i) => (i === index ? { ...item, v: e.target.value } : item)))
+                      }
+                    />
+                    <button
+                      className={iconBtn}
+                      type="button"
+                      aria-label={t("deleteMapping")}
+                      onClick={() => setMapping(mapping.filter((_, i) => i !== index))}
+                    >
+                      <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+                        <path d="M2 2l8 8M10 2L2 10" stroke="currentColor" strokeWidth="1.6" fill="none" />
+                      </svg>
+                    </button>
+                  </div>
+                ))}
                 <button
-                  className={iconBtn}
+                  className={cx(btnGhost, "justify-self-start")}
                   type="button"
-                  aria-label={t("deleteMapping")}
-                  onClick={() => setMapping(mapping.filter((_, i) => i !== index))}
+                  onClick={() => setMapping([...mapping, { k: "", v: "" }])}
                 >
-                  <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
-                    <path d="M2 2l8 8M10 2L2 10" stroke="currentColor" strokeWidth="1.6" fill="none" />
-                  </svg>
+                  {t("addMapping")}
                 </button>
               </div>
-            ))}
-            <button
-              className={cx(btnGhost, "justify-self-start")}
-              type="button"
-              onClick={() => setMapping([...mapping, { k: "", v: "" }])}
-            >
-              {t("addMapping")}
-            </button>
+            </div>
 
-            <h3 className={headingCopper}>
-              {t("agentTools")}
-              <Tip text={t("tip.agentTools")} label={t("help")} />
-            </h3>
-            <label className={check}>
-              <input
-                className="accent-copper"
-                type="checkbox"
-                checked={config.agentTools}
-                onChange={(e) => setConfig({ ...config, agentTools: e.target.checked })}
-              />
-              {t("enableTools")}
-              <Tip text={t("tip.enableTools")} label={t("help")} />
-            </label>
-            <label className={check}>
-              <input
-                className="accent-copper"
-                type="checkbox"
-                checked={config.blockUsageGate}
-                onChange={(e) => setConfig({ ...config, blockUsageGate: e.target.checked })}
-              />
-              {t("blockUsage")}
-              <Tip text={t("tip.blockUsage")} label={t("help")} />
-            </label>
-            <label className={field}>
-              <span className="inline-flex items-center gap-1">
-                {t("agentPrompt")}
-                <Tip text={t("tip.agentPrompt")} label={t("help")} />
-              </span>
-              <textarea
-                className={textareaControl}
-                value={config.agentSystemPrompt}
-                onChange={(e) => setConfig({ ...config, agentSystemPrompt: e.target.value })}
-              />
-            </label>
-            <div className="grid grid-cols-1 gap-3 min-[921px]:grid-cols-2">
+            {/* Agent Tools */}
+            <div className="rounded-lg border border-line p-3">
+              <h3 className={cx(headingCopper, "mb-2")}>
+                {t("agentTools")}
+                <Tip text={t("tip.agentTools")} label={t("help")} />
+              </h3>
+              <div className="grid grid-cols-1 gap-2 min-[600px]:grid-cols-2">
+                <label className={check}>
+                  <input
+                    className="accent-copper"
+                    type="checkbox"
+                    checked={config.agentTools}
+                    onChange={(e) => setConfig({ ...config, agentTools: e.target.checked })}
+                  />
+                  {t("enableTools")}
+                  <Tip text={t("tip.enableTools")} label={t("help")} />
+                </label>
+                <label className={check}>
+                  <input
+                    className="accent-copper"
+                    type="checkbox"
+                    checked={config.blockUsageGate}
+                    onChange={(e) => setConfig({ ...config, blockUsageGate: e.target.checked })}
+                  />
+                  {t("blockUsage")}
+                  <Tip text={t("tip.blockUsage")} label={t("help")} />
+                </label>
+              </div>
               <label className={field}>
                 <span className="inline-flex items-center gap-1">
                   {t("toolTimeout")}
@@ -367,134 +375,73 @@ export function Settings({ gw }: { gw: ReadyGateway }) {
                 />
               </label>
             </div>
-            <div className="grid gap-2">
-              {(
-                [
-                  ["env", "ctxEnv"],
-                  ["rules", "ctxRules"],
-                  ["repo", "ctxRepo"],
-                  ["layout", "ctxLayout"],
-                  ["mcp", "ctxMcp"],
-                  ["mcpToolSchemas", "ctxMcpSchemas"],
-                ] as const
-              ).map(([key, labelKey]) => (
-                <label className={check} key={key}>
-                  <input
-                    className="accent-copper"
-                    type="checkbox"
-                    checked={config.agentContext[key]}
-                    onChange={(e) =>
-                      setConfig({
-                        ...config,
-                        agentContext: { ...config.agentContext, [key]: e.target.checked },
-                      })
-                    }
-                  />
-                  {t(labelKey)}
-                  <Tip text={t(`tip.${labelKey}`)} label={t("help")} />
-                </label>
-              ))}
-            </div>
 
-            <h3 className={headingCopper}>
-              {t("intercept")}
-              <Tip text={t("tip.intercept")} label={t("help")} />
-            </h3>
-            <div className="grid gap-2">
-              {INTERCEPT_I18N.map((opt) => {
-                const on = config.interceptMethods.includes(opt.id);
-                return (
-                  <label className={check} key={opt.id}>
+            {/* Context */}
+            <div className="rounded-lg border border-line p-3">
+              <h3 className={cx(headingCopper, "mb-2")}>
+                {t("context")}
+                <Tip text={t("tip.agentTools")} label={t("help")} />
+              </h3>
+              <div className="grid grid-cols-1 gap-2 min-[600px]:grid-cols-2">
+                {(
+                  [
+                    ["env", "ctxEnv"],
+                    ["rules", "ctxRules"],
+                    ["repo", "ctxRepo"],
+                    ["layout", "ctxLayout"],
+                    ["mcp", "ctxMcp"],
+                    ["mcpToolSchemas", "ctxMcpSchemas"],
+                  ] as const
+                ).map(([key, labelKey]) => (
+                  <label className={check} key={key}>
                     <input
                       className="accent-copper"
                       type="checkbox"
-                      checked={on}
-                      onChange={() => {
-                        const next = on
-                          ? config.interceptMethods.filter((id) => id !== opt.id)
-                          : [...config.interceptMethods, opt.id];
-                        setConfig({ ...config, interceptMethods: next });
-                      }}
+                      checked={config.agentContext[key]}
+                      onChange={(e) =>
+                        setConfig({
+                          ...config,
+                          agentContext: { ...config.agentContext, [key]: e.target.checked },
+                        })
+                      }
                     />
-                    {t(opt.key)}
-                    <Tip text={`${t(`tip.${opt.key}`)} ${opt.id}`} label={t("help")} />
+                    {t(labelKey)}
+                    <Tip text={t(`tip.${labelKey}`)} label={t("help")} />
                   </label>
-                );
-              })}
+                ))}
+              </div>
             </div>
 
-            <h3 className={headingCopper}>
-              {t("sampling")}
-              <Tip text={t("tip.sampling")} label={t("help")} />
-            </h3>
-            <div className="grid grid-cols-1 gap-3 min-[921px]:grid-cols-2">
-              <label className={field}>
-                <span className="inline-flex items-center gap-1">
-                  {t("temperature")}
-                  <Tip text={t("tip.temperature")} label={t("help")} />
-                </span>
-                <input
-                  className={control}
-                  type="number"
-                  step="0.1"
-                  value={config.temperature ?? ""}
-                  onChange={(e) =>
-                    setConfig({
-                      ...config,
-                      temperature: e.target.value === "" ? null : Number(e.target.value),
-                    })
-                  }
-                />
-              </label>
-              <label className={field}>
-                <span className="inline-flex items-center gap-1">
-                  {t("maxTokens")}
-                  <Tip text={t("tip.maxTokens")} label={t("help")} />
-                </span>
-                <input
-                  className={control}
-                  type="number"
-                  value={config.maxTokens ?? ""}
-                  onChange={(e) =>
-                    setConfig({
-                      ...config,
-                      maxTokens: e.target.value === "" ? null : Number(e.target.value),
-                    })
-                  }
-                />
-              </label>
+            {/* Intercept */}
+            <div className="rounded-lg border border-line p-3">
+              <h3 className={cx(headingCopper, "mb-2")}>
+                {t("intercept")}
+                <Tip text={t("tip.intercept")} label={t("help")} />
+              </h3>
+              <div className="grid grid-cols-1 gap-2 min-[600px]:grid-cols-2">
+                {INTERCEPT_I18N.map((opt) => {
+                  const on = config.interceptMethods.includes(opt.id);
+                  return (
+                    <label className={check} key={opt.id}>
+                      <input
+                        className="accent-copper"
+                        type="checkbox"
+                        checked={on}
+                        onChange={() => {
+                          const next = on
+                            ? config.interceptMethods.filter((id) => id !== opt.id)
+                            : [...config.interceptMethods, opt.id];
+                          setConfig({ ...config, interceptMethods: next });
+                        }}
+                      />
+                      {t(opt.key)}
+                      <Tip text={`${t(`tip.${opt.key}`)} ${opt.id}`} label={t("help")} />
+                    </label>
+                  );
+                })}
+              </div>
             </div>
-            <label className={check}>
-              <input
-                className="accent-copper"
-                type="checkbox"
-                checked={config.sendReasoningAsText}
-                onChange={(e) => setConfig({ ...config, sendReasoningAsText: e.target.checked })}
-              />
-              {t("reasoningAsText")}
-              <Tip text={t("tip.reasoningAsText")} label={t("help")} />
-            </label>
-            <label className={check}>
-              <input
-                className="accent-copper"
-                type="checkbox"
-                checked={config.debugDump}
-                onChange={(e) => setConfig({ ...config, debugDump: e.target.checked })}
-              />
-              {t("debugDump")}
-              <Tip text={t("tip.debugDump")} label={t("help")} />
-            </label>
-            <label className={field}>
-              <span className="inline-flex items-center gap-1">
-                {t("extraHeaders")}
-                <Tip text={t("tip.extraHeaders")} label={t("help")} />
-              </span>
-              <textarea
-                className={textareaControl}
-                value={headersText}
-                onChange={(e) => setHeadersText(e.target.value)}
-              />
-            </label>
+
           </div>
         </details>
       </div>

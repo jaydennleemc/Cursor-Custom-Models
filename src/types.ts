@@ -16,16 +16,11 @@ export interface AppConfig {
   defaultModel: string;
   modelMapping: Record<string, string>;
   interceptMethods: string[];
-  temperature: number | null;
-  maxTokens: number | null;
   extraHeaders: Record<string, string>;
-  sendReasoningAsText: boolean;
   blockUsageGate: boolean;
   agentTools: boolean;
-  agentSystemPrompt: string;
   agentToolTimeoutMs: number;
   agentContext: AgentContext;
-  debugDump: boolean;
 }
 
 export interface ProxySettings {

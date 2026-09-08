@@ -56,25 +56,15 @@ pub struct AppConfig {
     #[serde(default = "default_intercept")]
     pub intercept_methods: Vec<String>,
     #[serde(default)]
-    pub temperature: Option<f64>,
-    #[serde(default)]
-    pub max_tokens: Option<u32>,
-    #[serde(default)]
     pub extra_headers: HashMap<String, String>,
-    #[serde(default)]
-    pub send_reasoning_as_text: bool,
     #[serde(default = "default_true")]
     pub block_usage_gate: bool,
     #[serde(default = "default_true")]
     pub agent_tools: bool,
-    #[serde(default)]
-    pub agent_system_prompt: String,
     #[serde(default = "default_timeout")]
     pub agent_tool_timeout_ms: u32,
     #[serde(default)]
     pub agent_context: AgentContext,
-    #[serde(default)]
-    pub debug_dump: bool,
 }
 
 impl Default for AppConfig {
@@ -86,16 +76,11 @@ impl Default for AppConfig {
             default_model: default_model(),
             model_mapping: default_mapping(),
             intercept_methods: default_intercept(),
-            temperature: None,
-            max_tokens: None,
             extra_headers: HashMap::new(),
-            send_reasoning_as_text: false,
             block_usage_gate: true,
             agent_tools: true,
-            agent_system_prompt: String::new(),
             agent_tool_timeout_ms: default_timeout(),
             agent_context: AgentContext::default(),
-            debug_dump: false,
         }
     }
 }

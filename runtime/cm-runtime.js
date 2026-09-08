@@ -39,7 +39,7 @@
  *         Drop homemade role prompts and "tools callable" notes, remove
  *         behavioral title suffixes. System messages contain only data Cursor
  *         collected (env / .cursorrules / repo / tree / MCP) plus the request's
- *         customSystemPrompt. Optional agentSystemPrompt (empty by default).
+ *         customSystemPrompt.
  * v1.6.0: Full tool channels — agent.v1 (Agents UI) with 8 built-in tools
  *         (read_file / grep_search / list_dir / write_file / run_terminal_cmd /
  *          web_fetch / delete_file / read_lints) plus MCP tools from
@@ -489,9 +489,7 @@
     var parts = [];
     var rc = plan.requestContext;
     // 纯透传(v1.6.1): 不注入任何自写角色提示词, 系统消息只由
-    // Cursor 收集的原文数据 + 请求内 customSystemPrompt 组成;
-    // agentSystemPrompt 配置(默认空)是唯一可选的自定义入口
-    if (CFG.agentSystemPrompt) parts.push(String(CFG.agentSystemPrompt));
+    // Cursor 收集的原文数据 + 请求内 customSystemPrompt 组成
     // 环境信息(env)
     if (ctx.env !== false && rc && rc.env) {
       var e = rc.env;
@@ -943,8 +941,6 @@
     var url = String(CFG.baseUrl).replace(/\/+$/, "") + "/chat/completions";
     var body = { model: model, messages: messages, stream: true };
     if (tools && tools.length) body.tools = tools;
-    if (CFG.temperature != null) body.temperature = CFG.temperature;
-    if (CFG.maxTokens != null) body.max_tokens = CFG.maxTokens;
     var headers = { "content-type": "application/json", "authorization": "Bearer " + CFG.apiKey };
     var extra = CFG.extraHeaders || {};
     Object.keys(extra).forEach(function (k) { headers[k] = extra[k]; });
@@ -1029,59 +1025,6 @@
         return Promise.resolve({ value: undefined, done: true });
       }
     };
-  }
-
-  /* ============================================================
-   * 调试转储: agent.v1.AgentService/Run 协议结构探测
-   * 由 config.debugDump 控制, 收集请求/响应消息结构到 __CURSOR_CM__.__dump
-   * ============================================================ */
-  var dumpStore = { requests: [], respTypeName: null, respFields: null, reqTypeName: null, reqFields: null };
-  function dumpFields(MsgT, depth) {
-    var out = [];
-    var ms = [];
-    try { ms = membersOf(MsgT) || []; } catch (e) { return ["<err " + (e && e.message) + ">"]; }
-    for (var i = 0; i < ms.length; i++) {
-      var m = ms[i];
-      if (m.kind === "oneof") {
-        var inner = [];
-        for (var j = 0; j < (m.fields || []).length; j++) inner.push(m.fields[j].localName + ":" + m.fields[j].kind);
-        out.push("oneof " + m.localName + " {" + inner.join(", ") + "}");
-      } else if (m.kind === "message" && m.T && depth > 0) {
-        out.push(m.localName + ":msg[" + dumpFields(m.T, depth - 1).join("; ") + "]");
-      } else {
-        out.push(m.localName + ":" + m.kind + (m.repeated ? "[]" : "") + (m.opt ? "?" : ""));
-      }
-    }
-    return out;
-  }
-  function handleDumpStream(service, method, signal, timeoutMs, header, input, contextValues) {
-    log("DUMP agent run stream, collecting protocol shape...");
-    (async function () {
-      try {
-        var n = 0;
-        for await (var m of input) {
-          n++;
-          if (n <= 8) {
-            var j = "";
-            try { j = JSON.stringify(m.toJson ? m.toJson() : m); } catch (e) { j = "<toJson err>"; }
-            dumpStore.requests.push((j || "").slice(0, 30000));
-            if (!dumpStore.reqTypeName && m.constructor && m.constructor.typeName) {
-              dumpStore.reqTypeName = m.constructor.typeName;
-              dumpStore.reqFields = dumpFields(m.constructor, 2);
-            }
-          }
-          if (n >= 64) break;
-        }
-        dumpStore.collectDone = true;
-        log("DUMP collected", n, "request messages");
-      } catch (e) { dumpStore.collectError = String(e && e.message); }
-    })();
-    var RespT = method.O;
-    try {
-      dumpStore.respTypeName = RespT.typeName;
-      dumpStore.respFields = dumpFields(RespT, 2);
-    } catch (e) { dumpStore.respFields = ["<err>"]; }
-    return Promise.reject(new Error(TAG + " debug dump (agent run) — see __CURSOR_CM__.__dump"));
   }
 
   /* ============================================================
@@ -1400,7 +1343,7 @@
             }
             var part = r.value;
             if (!part) continue;
-            if (part.type === "reasoning" && !CFG.sendReasoningAsText) {
+            if (part.type === "reasoning") {
               var tmR = thinkMsg(part.text);
               if (tmR) yield tmR;
               continue;
@@ -1648,7 +1591,7 @@
             if (r.done) break;
             var part = r.value;
             if (!part) continue;
-            if (part.type === "reasoning" && !CFG.sendReasoningAsText) {
+            if (part.type === "reasoning") {
               var tm2 = makeRespMsg(emitter, RespT, null, part.text);
               if (tm2) yield tm2;
               continue;
@@ -1802,7 +1745,7 @@
           var part = r.value;
           if (!part || !part.text) continue;
 
-          if (part.type === "reasoning" && !CFG.sendReasoningAsText) {
+          if (part.type === "reasoning") {
             var thinkMsg = null;
             if (useCmdkEdit || useCmdkChat) {
               // CmdK 响应类型无 thinking 字段，跳过
@@ -1911,10 +1854,6 @@
           return function () {
             var args = Array.prototype.slice.call(arguments);
             var service = args[0], method = args[1];
-            if (CFG.debugDump && service.typeName === "agent.v1.AgentService" && method.name === "Run") {
-              stats.intercept++;
-              return handleDumpStream.apply(null, args);
-            }
             if (isTarget(service, method)) {
               try {
                 stats.intercept++;
@@ -1940,7 +1879,6 @@
     active: true,
     version: "1.6.9",
     stats: stats,
-    __dump: dumpStore,
     config: {
       baseUrl: CFG.baseUrl,
       defaultModel: CFG.defaultModel,

@@ -76,7 +76,7 @@ App version lives in `package.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.co
 
 UI `EditToolCall.result` is **`EditResult` (`success.after_full_file_content`)**. Exec `writeResult` is **`WriteResult` (`message`)**. They are different protobuf messages. Stuffing the exec instance into Completed makes Cursor abort the Agent stream after a few tools.
 
-System prompt is **passthrough**: only Cursor-collected context + optional `agentSystemPrompt`. Do not invent a second persona.
+System prompt is **passthrough**: only Cursor-collected context. Do not invent a second persona.
 
 ## Invariants (do not regress)
 
@@ -108,7 +108,6 @@ These were learned the hard way after 1.0.2, mostly while fixing the “Editing 
 
 Tests mock real Cursor shapes in `test-integration.cjs` (`makeType`, `EditResultT` vs `WriteResultT`). If you learn a new proto field from a dump, add it there first, then assert it in a T-case, then change the runtime.
 
-Debug dump: set `debugDump` in config, inspect `globalThis.__CURSOR_CM__.__dump` in the extension host / renderer DevTools. That path **rejects** the stream on purpose after collecting request shape.
 
 After changing the runtime, users must **Stop → Quit Cursor (tray too) → Start → Open Cursor**. A live Cursor process keeps the old inject in memory.
 
