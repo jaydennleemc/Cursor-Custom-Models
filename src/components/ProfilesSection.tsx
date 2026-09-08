@@ -197,13 +197,20 @@ export function ProfilesSection({
                       autoFocus
                     />
                   ) : (
-                    <button
-                      type="button"
+                    <span
                       className={cx(
-                        "min-w-0 flex-1 truncate rounded-md border-0 bg-transparent px-0 py-1 text-left text-sm",
+                        "min-w-0 flex-1 truncate text-sm",
                         name === activeProfile ? "font-semibold text-copper-2" : "text-ink",
                       )}
-                      title={t("profileRename")}
+                    >
+                      {name}
+                    </span>
+                  )}
+                  <div className="flex shrink-0 items-center gap-1">
+                    <button
+                      type="button"
+                      className={cx(iconBtn, "hover:border-line hover:text-ink focus-visible:outline-none")}
+                      aria-label={t("profileRename")}
                       disabled={busy !== null}
                       onClick={() => {
                         setRenameError(null);
@@ -211,10 +218,21 @@ export function ProfilesSection({
                         setEditValue(name);
                       }}
                     >
-                      {name}
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        className="h-4 w-4"
+                        aria-hidden="true"
+                      >
+                        <path d="M12 20h9" />
+                        <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+                      </svg>
                     </button>
-                  )}
-                  <div className="flex shrink-0 items-center gap-1">
                     <button
                       type="button"
                       className={cx(iconBtn, "hover:border-line hover:text-ink focus-visible:outline-none")}
