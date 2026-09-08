@@ -44,6 +44,7 @@ export function Settings({ gw }: { gw: ReadyGateway }) {
     banner,
     applyModel,
     syncConfig,
+    commitConfig,
   } = gw;
 
   const preset = PROVIDERS.find((p) => p.id === providerId);
@@ -164,17 +165,16 @@ export function Settings({ gw }: { gw: ReadyGateway }) {
                   setProviderId(p.id);
                   if (!p.baseUrl) return;
                   setModelCustom(false);
-                  setConfig({
+                  const nextRows = mapping.map((row) => (row.k === "*" ? { ...row, v: p.defaultModel } : row));
+                  const rows = nextRows.some((row) => row.k === "*")
+                    ? nextRows
+                    : [{ k: "*", v: p.defaultModel }, ...nextRows];
+                  setMapping(rows);
+                  commitConfig({
                     ...config,
                     baseUrl: p.baseUrl,
                     defaultModel: p.defaultModel,
-                    modelMapping: { ...fromPairs(mapping), "*": p.defaultModel },
-                  });
-                  setMapping((rows) => {
-                    const next = rows.map((row) => (row.k === "*" ? { ...row, v: p.defaultModel } : row));
-                    return next.some((row) => row.k === "*")
-                      ? next
-                      : [{ k: "*", v: p.defaultModel }, ...next];
+                    modelMapping: fromPairs(rows),
                   });
                 }}
               >

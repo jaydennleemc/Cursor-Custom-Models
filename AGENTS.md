@@ -36,7 +36,7 @@ Patched Cursor files:
 - `workbench.glass.main.js`
 - `extensionHostProcess.js` (this is where HTTP actually terminates)
 
-Config is **not** stored in Cursor settings.
+Config is **not** stored in Cursor settings. After the first Start, the runtime pulls live `baseUrl` / `apiKey` / `defaultModel` / mapping from Gateway `GET /config` on each upstream call, so switching profile or model does not need Stop or quitting Cursor. Gateway must stay running. Intercept method list and the transport wrap still require a Start (and a Cursor restart) to change.
 
 ## Commands
 
@@ -51,7 +51,7 @@ npm run tauri build
 
 Do not claim an Agent/Chat protocol fix works unless `npm run test:runtime` is green.
 
-App version lives in `package.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`, and `src/App.tsx` (`APP_VERSION`). Runtime protocol version is `g.__CURSOR_CM__.version` inside `cm-runtime.js` (currently `1.6.10`). The file banner `Cursor Custom Models Runtime vX.Y.Z` **must match** that exported version — T1 asserts this. App `1.0.x` and runtime `1.6.x` are independent; keep the four app-version locations in sync with each other.
+App version lives in `package.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`, and `src/App.tsx` (`APP_VERSION`). Runtime protocol version is `g.__CURSOR_CM__.version` inside `cm-runtime.js` (currently `1.6.11`). The file banner `Cursor Custom Models Runtime vX.Y.Z` **must match** that exported version — T1 asserts this. App `1.0.x` and runtime `1.6.x` are independent; keep the four app-version locations in sync with each other.
 
 ## How the Agent path works
 

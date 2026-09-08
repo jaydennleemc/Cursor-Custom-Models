@@ -1,11 +1,13 @@
 /* ============================================================
- * Cursor Custom Models Runtime v1.6.10
+ * Cursor Custom Models Runtime v1.6.11
  * Injected at the end of three files (same code, separate processes):
  *   workbench.desktop.main.js / workbench.glass.main.js (renderer)
  *   extensionHostProcess.js (extension host — where HTTP actually terminates)
  * Intercepts the ConnectRPC transport and forwards Chat / Cmd+K / Agent
  * requests to the user-configured OpenAI-compatible API.
  *
+ * v1.6.11: Pull live Gateway config before each upstream call so profile /
+ *          model / key / baseUrl hot-swap without Stop or quitting Cursor.
  * v1.6.10: Log via HTTP to Gateway log server instead of require("fs")
  *          (fixes empty log file when extension host runs as ES module).
  *          Flush POSTs immediately; Gateway binds the log port before Start.
@@ -973,14 +975,53 @@
   }
 
   /* ---------- OpenAI 兼容流式调用 ---------- */
+  var _cfgFetch = null;
+  var _cfgFetchedAt = 0;
+  var LIVE_CFG_KEYS = [
+    "enabled", "baseUrl", "apiKey", "defaultModel", "modelMapping", "extraHeaders",
+    "temperature", "maxTokens", "sendReasoningAsText", "blockUsageGate", "agentTools",
+    "agentSystemPrompt", "agentToolTimeoutMs", "agentMaxToolRounds", "agentContext", "debugDump"
+  ];
+  function applyLiveCfg(next) {
+    if (!next || typeof next !== "object") return;
+    var prevModel = CFG.defaultModel;
+    var prevUrl = CFG.baseUrl;
+    for (var i = 0; i < LIVE_CFG_KEYS.length; i++) {
+      var k = LIVE_CFG_KEYS[i];
+      if (next[k] !== undefined) CFG[k] = next[k];
+    }
+    if (g.__CURSOR_CM__ && g.__CURSOR_CM__.config) {
+      g.__CURSOR_CM__.config.baseUrl = CFG.baseUrl;
+      g.__CURSOR_CM__.config.defaultModel = CFG.defaultModel;
+    }
+    if (String(prevModel) !== String(CFG.defaultModel) || String(prevUrl) !== String(CFG.baseUrl)) {
+      log("live config →", CFG.baseUrl, "| model:", CFG.defaultModel);
+    }
+  }
+  function refreshCfg() {
+    if (!_logPort) return Promise.resolve();
+    var now = Date.now();
+    if (_cfgFetch && now - _cfgFetchedAt < 250) return _cfgFetch;
+    _cfgFetchedAt = now;
+    _cfgFetch = fetch("http://127.0.0.1:" + _logPort + "/config", { method: "GET" })
+      .then(function (r) { return r && r.ok ? r.json() : null; })
+      .then(function (next) { applyLiveCfg(next); })
+      .catch(function () { /* Gateway down: keep last CFG */ });
+    return _cfgFetch;
+  }
+
   function callUpstream(messages, model, signal, tools) {
-    var url = String(CFG.baseUrl).replace(/\/+$/, "") + "/chat/completions";
-    var body = { model: model, messages: messages, stream: true };
-    if (tools && tools.length) body.tools = tools;
-    var headers = { "content-type": "application/json", "authorization": "Bearer " + CFG.apiKey };
-    var extra = CFG.extraHeaders || {};
-    Object.keys(extra).forEach(function (k) { headers[k] = extra[k]; });
-    return fetch(url, { method: "POST", signal: signal, headers: headers, body: JSON.stringify(body) });
+    return refreshCfg().then(function () {
+      var url = String(CFG.baseUrl).replace(/\/+$/, "") + "/chat/completions";
+      var body = { model: model, messages: messages, stream: true };
+      if (tools && tools.length) body.tools = tools;
+      if (CFG.temperature != null) body.temperature = CFG.temperature;
+      if (CFG.maxTokens != null) body.max_tokens = CFG.maxTokens;
+      var headers = { "content-type": "application/json", "authorization": "Bearer " + CFG.apiKey };
+      var extra = CFG.extraHeaders || {};
+      Object.keys(extra).forEach(function (k) { headers[k] = extra[k]; });
+      return fetch(url, { method: "POST", signal: signal, headers: headers, body: JSON.stringify(body) });
+    });
   }
 
   // 解析 SSE，yield {type:"text"|"reasoning", text}
@@ -1135,6 +1176,8 @@
       : (isBidi ? withWindow(Promise.race([collectGate, collectPromise]), 200) : collectPromise);
 
     var planPromise = collectPhase.then(function (list) {
+      return refreshCfg().then(function () { return list; });
+    }).then(function (list) {
       var req, meta, out;
       if (isAgentRun) {
         var plan = agentRunToPlan(list);
@@ -1913,14 +1956,15 @@
 
   g.__CURSOR_CM__ = {
     active: true,
-    version: "1.6.10",
+    version: "1.6.11",
     stats: stats,
     config: {
       baseUrl: CFG.baseUrl,
       defaultModel: CFG.defaultModel,
       interceptMethods: CFG.interceptMethods || []
     },
-    wrap: wrapTransport
+    wrap: wrapTransport,
+    refreshConfig: refreshCfg
   };
   log("runtime active →", CFG.baseUrl, "| targets:", (CFG.interceptMethods || []).length);
 })();

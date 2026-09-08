@@ -44,6 +44,7 @@ export type Gateway = {
   patchedCount: number;
   applyModel: (model: string) => void;
   syncConfig: (config: AppConfig) => void;
+  commitConfig: (config: AppConfig) => void;
   onSave: () => Promise<void>;
   onTestConnection: () => Promise<void>;
   onTogglePatch: () => Promise<void>;
@@ -132,7 +133,7 @@ export function useGateway(): Gateway {
     }
   }
 
-  function syncConfig(cfg: AppConfig) {
+  function hydrateConfig(cfg: AppConfig) {
     setConfig(cfg);
     const matched = matchProvider(cfg.baseUrl);
     setProviderId(matched.id);
@@ -141,12 +142,24 @@ export function useGateway(): Gateway {
     setHeadersText(JSON.stringify(cfg.extraHeaders ?? {}, null, 2));
   }
 
+  function commitConfig(cfg: AppConfig) {
+    hydrateConfig(cfg);
+    void api.saveConfig(cfg).catch(() => { /* keep UI; next Save retries */ });
+  }
+
+  function syncConfig(cfg: AppConfig) {
+    commitConfig(cfg);
+  }
+
   function applyModel(model: string) {
     if (!config) return;
-    setConfig({ ...config, defaultModel: model });
-    setMapping((rows) => {
-      const next = rows.map((row) => (row.k === "*" ? { ...row, v: model } : row));
-      return next.some((row) => row.k === "*") ? next : [{ k: "*", v: model }, ...next];
+    const rows = mapping.map((row) => (row.k === "*" ? { ...row, v: model } : row));
+    const nextRows = rows.some((row) => row.k === "*") ? rows : [{ k: "*", v: model }, ...rows];
+    setMapping(nextRows);
+    commitConfig({
+      ...config,
+      defaultModel: model,
+      modelMapping: fromPairs(nextRows),
     });
   }
 
@@ -266,6 +279,7 @@ export function useGateway(): Gateway {
     patchedCount,
     applyModel,
     syncConfig,
+    commitConfig,
     onSave,
     onTestConnection,
     onTogglePatch,

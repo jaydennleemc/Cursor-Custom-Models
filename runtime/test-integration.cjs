@@ -1,5 +1,5 @@
 // ============================================================
-// 集成测试 v1.6.10: 模拟 Cursor transport + protobuf-es v2 消息类型 + Mock SSE
+// 集成测试 v1.6.11: 模拟 Cursor transport + protobuf-es v2 消息类型 + Mock SSE
 // 覆盖: 消息提取 / 模型映射 / SSE解析 / oneof包装响应构造 /
 //       CmdK编辑协议 / Agent包装响应 / streamStart / BiDi合并 / 透传 / 错误处理 /
 //       agent.v1.AgentService/Run 协议(Agents 界面: 心跳/textDelta/thinkingDelta/
@@ -1245,4 +1245,36 @@ async function runTests(T) {
   T("T42 Chat reasoning+content同delta两者都保留",
     t42[0] && t42[0].thinking instanceof ThinkingT && t42[0].thinking.text === "想" && t42[1] && t42[1].text === "答",
     JSON.stringify(t42.map((m) => (m && m.thinking && m.thinking.text) ? "think:" + m.thinking.text : (m && m.text) || "?")));
+
+  // T43: baked CFG is stale; live GET /config must win before the upstream call.
+  const cfgSrv = http.createServer((req, res) => {
+    if (req.method === "GET" && String(req.url || "").startsWith("/config")) {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({
+        enabled: true,
+        baseUrl: `http://127.0.0.1:${PORT}/v1`,
+        apiKey: "sk-test-key",
+        defaultModel: "hot-swap-model",
+        modelMapping: { "*": "hot-swap-model" }
+      }));
+      return;
+    }
+    res.writeHead(204);
+    res.end();
+  });
+  await new Promise((rs) => cfgSrv.listen(0, "127.0.0.1", rs));
+  const livePort = cfgSrv.address().port;
+  const wrapLive = new Function(
+    runtimeSrc.replace(JSON.stringify(cfg), JSON.stringify({
+      ...cfg,
+      logPort: livePort,
+      defaultModel: "stale-model",
+      modelMapping: { "*": "stale-model" }
+    })) + "\n;return globalThis.__CURSOR_CM__.wrap;"
+  )()(origTransport);
+  sseScript = [{ delta: { content: "ok" } }];
+  r = await wrapLive.stream(svcChat, mUnified, null, null, {}, oneMsg(chatReq));
+  await collect(r.message);
+  await new Promise((rs) => cfgSrv.close(rs));
+  T("T43 热切换从 Gateway 拉模型", lastRequestBody.model === "hot-swap-model", String(lastRequestBody.model));
 }
