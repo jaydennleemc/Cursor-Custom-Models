@@ -148,6 +148,8 @@ const en: Dict = {
   profileDeleted: "Profile '{name}' deleted",
   profileConfirmDelete: "Delete profile '{name}'?",
   profileNoProfiles: "No profiles saved yet",
+  profileRename: "Rename",
+  profileExists: "A profile named '{name}' already exists",
   cancel: "Cancel",
   deleting: "Deleting…",
 };
@@ -289,6 +291,8 @@ const zhCN: Dict = {
   profileDeleted: "已删除方案 '{name}'",
   profileConfirmDelete: "确认删除方案 '{name}'？",
   profileNoProfiles: "暂无保存的配置方案",
+  profileRename: "重命名",
+  profileExists: "已有名为 '{name}' 的方案",
   cancel: "取消",
   deleting: "删除中…",
 };
@@ -430,6 +434,8 @@ const zhTW: Dict = {
   profileDeleted: "已刪除方案 '{name}'",
   profileConfirmDelete: "確認刪除方案 '{name}'？",
   profileNoProfiles: "尚無儲存的配置方案",
+  profileRename: "重新命名",
+  profileExists: "已有名為 '{name}' 的方案",
   cancel: "取消",
   deleting: "刪除中…",
 };

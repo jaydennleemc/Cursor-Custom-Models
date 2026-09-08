@@ -238,6 +238,12 @@ mod tests {
     }
 
     #[test]
+    fn inject_json_includes_log_port() {
+        let json = AppConfig::default().to_inject_json(12345).unwrap();
+        assert!(json.contains("\"logPort\":12345"), "{json}");
+    }
+
+    #[test]
     fn placeholder_key_is_unconfigured() {
         let mut cfg = AppConfig::default();
         cfg.api_key = "sk-YOUR-API-KEY-HERE".into();

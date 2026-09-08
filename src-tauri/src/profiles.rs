@@ -68,7 +68,7 @@ pub fn load_profile(name: &str) -> Result<AppConfig> {
 
 pub fn delete_profile(name: &str) -> Result<ProfilesState> {
     let mut state = load_profiles()?;
-    state.profiles.remove(name);
+    state.profiles.shift_remove(name);
     if state.active_profile.as_deref() == Some(name) {
         state.active_profile = None;
     }
@@ -84,6 +84,37 @@ pub fn set_active_profile(name: &str) -> Result<ProfilesState> {
     state.active_profile = Some(name.to_string());
     save_profiles(&state)?;
     Ok(state)
+}
+
+pub fn rename_profile(from: &str, to: &str) -> Result<ProfilesState> {
+    let from = from.trim();
+    let to = to.trim();
+    if from.is_empty() || to.is_empty() {
+        return Err(AppError::msg("Profile name is empty"));
+    }
+    let mut state = load_profiles()?;
+    apply_rename(&mut state, from, to)?;
+    save_profiles(&state)?;
+    Ok(state)
+}
+
+fn apply_rename(state: &mut ProfilesState, from: &str, to: &str) -> Result<()> {
+    if from == to {
+        return Ok(());
+    }
+    if !state.profiles.contains_key(from) {
+        return Err(AppError::msg(format!("Profile '{from}' not found")));
+    }
+    if state.profiles.contains_key(to) {
+        return Err(AppError::msg(format!("Profile '{to}' already exists")));
+    }
+    let idx = state.profiles.get_index_of(from).unwrap_or(0);
+    let config = state.profiles.shift_remove(from).expect("key checked");
+    state.profiles.shift_insert(idx, to.to_string(), config);
+    if state.active_profile.as_deref() == Some(from) {
+        state.active_profile = Some(to.to_string());
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -107,5 +138,30 @@ mod tests {
         let json = serde_json::to_string(&state).unwrap();
         let back: ProfilesState = serde_json::from_str(&json).unwrap();
         assert_eq!(state, back);
+    }
+
+    #[test]
+    fn rename_keeps_order_and_active() {
+        let mut state = ProfilesState::default();
+        let cfg = AppConfig::default();
+        state.profiles.insert("a".into(), cfg.clone());
+        state.profiles.insert("b".into(), cfg.clone());
+        state.profiles.insert("c".into(), cfg);
+        state.active_profile = Some("b".into());
+
+        apply_rename(&mut state, "b", "work").unwrap();
+        let keys: Vec<_> = state.profiles.keys().cloned().collect();
+        assert_eq!(keys, vec!["a", "work", "c"]);
+        assert_eq!(state.active_profile.as_deref(), Some("work"));
+    }
+
+    #[test]
+    fn rename_rejects_collision() {
+        let mut state = ProfilesState::default();
+        let cfg = AppConfig::default();
+        state.profiles.insert("a".into(), cfg.clone());
+        state.profiles.insert("b".into(), cfg);
+        let err = apply_rename(&mut state, "a", "b").unwrap_err();
+        assert!(err.to_string().contains("already exists"));
     }
 }

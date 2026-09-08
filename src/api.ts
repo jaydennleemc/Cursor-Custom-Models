@@ -28,6 +28,8 @@ export const deleteProfile = (name: string) =>
   invoke<ProfilesState>("delete_profile", { name });
 export const setActiveProfile = (name: string) =>
   invoke<ProfilesState>("set_active_profile", { name });
+export const renameProfile = (from: string, to: string) =>
+  invoke<ProfilesState>("rename_profile", { from, to });
 export const openCursor = () => invoke<string>("open_cursor");
 export const quitCursor = () => invoke<string>("quit_cursor");
 export const openLogFile = () => invoke<string>("open_log_file");

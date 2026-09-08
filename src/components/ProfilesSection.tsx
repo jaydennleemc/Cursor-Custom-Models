@@ -20,10 +20,13 @@ export function ProfilesSection({
   const [profiles, setProfiles] = useState<Record<string, AppConfig>>({});
   const [activeProfile, setActiveProfile] = useState<string | null>(null);
   const [newProfileName, setNewProfileName] = useState("");
-  const [busy, setBusy] = useState<"load" | "save" | "delete" | null>(null);
+  const [busy, setBusy] = useState<"load" | "save" | "delete" | "rename" | null>(null);
   const dialogRef = useRef<HTMLDialogElement>(null);
   const deleteRef = useRef<HTMLDialogElement>(null);
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
+  const [editingName, setEditingName] = useState<string | null>(null);
+  const [editValue, setEditValue] = useState("");
+  const [renameError, setRenameError] = useState<string | null>(null);
 
   const loadProfiles = useCallback(async () => {
     try {
@@ -71,6 +74,35 @@ export function ProfilesSection({
     }
   };
 
+  const cancelRename = () => {
+    setEditingName(null);
+    setEditValue("");
+    setRenameError(null);
+  };
+
+  const handleRename = async (from: string) => {
+    const to = editValue.trim();
+    if (!to || to === from) {
+      cancelRename();
+      return;
+    }
+    setBusy("rename");
+    setRenameError(null);
+    try {
+      const state = await api.renameProfile(from, to);
+      setProfiles(state.profiles);
+      setActiveProfile(state.activeProfile);
+      cancelRename();
+    } catch (err: unknown) {
+      const text = err instanceof Error ? err.message : String(err);
+      setRenameError(
+        /already exists/i.test(text) ? t("profileExists").replace("{name}", to) : text,
+      );
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const handleDelete = async (name: string) => {
     setBusy("delete");
     try {
@@ -95,9 +127,10 @@ export function ProfilesSection({
         className={cx(btnGhost, "px-2.5")}
         aria-label={t("profiles")}
         aria-haspopup="dialog"
-        onClick={() => {
+        onClick={(e) => {
           void loadProfiles();
           dialogRef.current?.showModal();
+          e.currentTarget.blur();
         }}
       >
         <svg
@@ -117,13 +150,18 @@ export function ProfilesSection({
 
       <dialog
         ref={dialogRef}
-        className="lang-dialog w-[min(400px,calc(100vw-48px))] max-h-[80vh] rounded-2xl border border-line bg-rail p-0 text-ink shadow-panel"
+        tabIndex={-1}
+        className="lang-dialog w-[min(400px,calc(100vw-48px))] max-h-[80vh] rounded-2xl border border-line bg-rail p-0 text-ink shadow-panel outline-none"
         aria-labelledby="profiles-dialog-title"
         onClick={(e) => {
           if (e.target === e.currentTarget) e.currentTarget.close();
         }}
       >
-        <form method="dialog" className="grid gap-3 px-4 pt-[18px] pb-4">
+        <form
+          method="dialog"
+          className="grid gap-3 px-4 pt-[18px] pb-4"
+          onSubmit={(e) => e.preventDefault()}
+        >
           <h3 id="profiles-dialog-title" className={headingSm}>
             {t("profiles")}
           </h3>
@@ -135,16 +173,51 @@ export function ProfilesSection({
               {profileNames.map((name) => (
                 <div
                   key={name}
-                  className={cx(
-                    "flex items-center justify-between rounded-lg border px-3 py-2",
-                    name === activeProfile ? "border-copper bg-raised" : "border-line",
-                  )}
+                  className="flex items-center justify-between gap-2 rounded-lg border border-line px-3 py-2"
                 >
-                  <span className="text-sm">{name}</span>
-                  <div className="flex items-center gap-1">
+                  {editingName === name ? (
+                    <input
+                      className={cx(control, "min-h-8 min-w-0 flex-1")}
+                      type="text"
+                      value={editValue}
+                      aria-label={t("profileRename")}
+                      disabled={busy !== null}
+                      onChange={(e) => setEditValue(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          void handleRename(name);
+                        }
+                        if (e.key === "Escape") {
+                          e.preventDefault();
+                          cancelRename();
+                        }
+                      }}
+                      onBlur={() => void handleRename(name)}
+                      autoFocus
+                    />
+                  ) : (
                     <button
                       type="button"
-                      className={iconBtn}
+                      className={cx(
+                        "min-w-0 flex-1 truncate rounded-md border-0 bg-transparent px-0 py-1 text-left text-sm",
+                        name === activeProfile ? "font-semibold text-copper-2" : "text-ink",
+                      )}
+                      title={t("profileRename")}
+                      disabled={busy !== null}
+                      onClick={() => {
+                        setRenameError(null);
+                        setEditingName(name);
+                        setEditValue(name);
+                      }}
+                    >
+                      {name}
+                    </button>
+                  )}
+                  <div className="flex shrink-0 items-center gap-1">
+                    <button
+                      type="button"
+                      className={cx(iconBtn, "hover:border-line hover:text-ink focus-visible:outline-none")}
                       aria-label={t("profileLoad")}
                       disabled={busy !== null}
                       onClick={() => void handleLoad(name)}
@@ -167,7 +240,7 @@ export function ProfilesSection({
                     </button>
                     <button
                       type="button"
-                      className={iconBtn}
+                      className={cx(iconBtn, "focus-visible:outline-none")}
                       aria-label={t("profileDelete")}
                       disabled={busy !== null}
                       onClick={() => {
@@ -195,6 +268,7 @@ export function ProfilesSection({
               ))}
             </div>
           )}
+          {renameError ? <p className="text-sm text-bad">{renameError}</p> : null}
         </form>
       </dialog>
 

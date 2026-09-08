@@ -8,6 +8,7 @@
  *
  * v1.6.10: Log via HTTP to Gateway log server instead of require("fs")
  *          (fixes empty log file when extension host runs as ES module).
+ *          Flush POSTs immediately; Gateway binds the log port before Start.
  * v1.6.9: Agent textDelta streams live (was buffered until SSE end, so the
  *         visible reply dumped at once). Same-buffer tool_calls still hold
  *         preamble as thinkingDelta. heartbeatWhile returns immediately when
@@ -85,27 +86,24 @@
   var TAG = "[CustomModels]";
   var _logPort = (CFG && CFG.logPort) || 0;
   var _logQueue = [];
-  var _logTimer = null;
 
   function _flushLog() {
     if (!_logPort || _logQueue.length === 0) return;
     var batch = _logQueue.splice(0);
     try {
       var body = batch.join("\n") + "\n";
-      // fire-and-forget: don't block on log delivery
-      fetch("http://127.0.0.1:" + _logPort + "/log", { method: "POST", body: body }).catch(function () { /* noop */ });
+      fetch("http://127.0.0.1:" + _logPort + "/log", {
+        method: "POST",
+        headers: { "content-type": "text/plain" },
+        body: body,
+      }).catch(function () { /* noop */ });
     } catch (e) { /* noop */ }
   }
 
   function _appendFile(line) {
     if (!_logPort) return;
     _logQueue.push(line);
-    if (!_logTimer) {
-      _logTimer = setTimeout(function () {
-        _logTimer = null;
-        _flushLog();
-      }, 500);
-    }
+    _flushLog();
   }
 
   function _fmtLog(args) {
