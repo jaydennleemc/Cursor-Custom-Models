@@ -803,6 +803,7 @@
       caseName: "editToolCall",
       execCase: "writeArgs",
       argKeys: { path: "path", fileText: "content" },
+      uiArgKeys: { path: "path", streamContent: "content" },
       localOnly: true,
     },
     run_terminal_cmd: {
@@ -2505,7 +2506,7 @@
               c2.id,
               resolved,
               argsObj,
-              { message: { case: "writeResult", value: editRes } },
+              { message: { case: "writeResult", value: editRes }, content: editRes.content, path: argsObj.path },
               true,
             );
             if (cpMsg0) yield cpMsg0;
