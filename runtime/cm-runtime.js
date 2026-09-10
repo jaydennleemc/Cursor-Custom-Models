@@ -1,11 +1,16 @@
 /* ============================================================
- * Cursor Custom Models Runtime v1.6.11
+ * Cursor Custom Models Runtime v1.6.12
  * Injected at the end of three files (same code, separate processes):
  *   workbench.desktop.main.js / workbench.glass.main.js (renderer)
  *   extensionHostProcess.js (extension host — where HTTP actually terminates)
  * Intercepts the ConnectRPC transport and forwards Chat / Cmd+K / Agent
  * requests to the user-configured OpenAI-compatible API.
  *
+ * v1.6.12: Add edit_file tool (search/replace) so models can modify files
+ *          without full-content write_file. Prevents truncation when model
+ *          only sends the changed portion. Executes locally via require('fs').
+ *          Track SSE finish_reason — warn user when response truncated by
+ *          max_tokens (common with reasoning models like DeepSeek V4 Flash).
  * v1.6.11: Pull live Gateway config before each upstream call so profile /
  *          model / key / baseUrl hot-swap without Stop or quitting Cursor.
  * v1.6.10: Log via HTTP to Gateway log server instead of require("fs")
@@ -66,8 +71,7 @@
  *       build nested messages via protobuf-es v2 fields.byMember;
  *       CmdK reads contextItems and emits the edit protocol.
  * ============================================================ */
-;(function () {
-  "use strict";
+(() => {
   var CFG = __CM_CONFIG_PLACEHOLDER__;
   var g = globalThis;
 
@@ -81,7 +85,11 @@
     return false;
   }
   if (looksUnconfigured(CFG)) {
-    g.__CURSOR_CM__ = { active: false, reason: "disabled-or-unconfigured", wrap: function (t) { return t; } };
+    g.__CURSOR_CM__ = {
+      active: false,
+      reason: "disabled-or-unconfigured",
+      wrap: (t) => t,
+    };
     return;
   }
 
@@ -98,8 +106,12 @@
         method: "POST",
         headers: { "content-type": "text/plain" },
         body: body,
-      }).catch(function () { /* noop */ });
-    } catch (e) { /* noop */ }
+      }).catch(() => {
+        /* noop */
+      });
+    } catch (e) {
+      /* noop */
+    }
   }
 
   function _appendFile(line) {
@@ -112,9 +124,13 @@
     try {
       var now = new Date().toISOString();
       var parts = [now, TAG];
-      for (var i = 0; i < args.length; i++) { parts.push(String(args[i])); }
+      for (var i = 0; i < args.length; i++) {
+        parts.push(String(args[i]));
+      }
       return parts.join(" ");
-    } catch (e) { return ""; }
+    } catch (e) {
+      return "";
+    }
   }
 
   function log() {
@@ -123,7 +139,9 @@
       args.unshift(TAG);
       console.log.apply(console, args);
       _appendFile(_fmtLog(arguments));
-    } catch (e) { /* noop */ }
+    } catch (e) {
+      /* noop */
+    }
   }
   function err() {
     try {
@@ -131,14 +149,18 @@
       args.unshift(TAG);
       console.error.apply(console, args);
       _appendFile(_fmtLog(arguments));
-    } catch (e) { /* noop */ }
+    } catch (e) {
+      /* noop */
+    }
   }
 
   /* ---------- 拦截目标 ---------- */
   var TARGETS = {};
-  (CFG.interceptMethods || []).forEach(function (m) { TARGETS[m] = 1; });
+  (CFG.interceptMethods || []).forEach((m) => {
+    TARGETS[m] = 1;
+  });
   function isTarget(service, method) {
-    return Object.prototype.hasOwnProperty.call(TARGETS, service.typeName + "/" + method.name);
+    return Object.hasOwn(TARGETS, service.typeName + "/" + method.name);
   }
 
   /* ---------- Usage 门禁拦截 ----------
@@ -149,11 +171,11 @@
    * 由 config.blockUsageGate 控制(默认开启)。 */
   var GATE_UNARYS = {
     "aiserver.v1.DashboardService/GetUsageLimitStatusAndActiveGrants": 1,
-    "aiserver.v1.DashboardService/GetUsageLimitPolicyStatus": 1
+    "aiserver.v1.DashboardService/GetUsageLimitPolicyStatus": 1,
   };
   function isUsageGate(service, method) {
     if (CFG.blockUsageGate === false) return false;
-    return Object.prototype.hasOwnProperty.call(GATE_UNARYS, service.typeName + "/" + method.name);
+    return Object.hasOwn(GATE_UNARYS, service.typeName + "/" + method.name);
   }
   function handleGateUnary(service, method) {
     var key = service.typeName + "/" + method.name;
@@ -164,7 +186,7 @@
       method: method,
       header: new Headers(),
       trailer: new Headers(),
-      message: new method.O({}) // 空响应: isInSlowPool 缺省 false, 无 resetAtMs
+      message: new method.O({}), // 空响应: isInSlowPool 缺省 false, 无 resetAtMs
     });
   }
 
@@ -179,7 +201,9 @@
     try {
       var fl = MsgT && MsgT.fields;
       if (fl && typeof fl.byMember === "function") return fl.byMember() || [];
-    } catch (e) { /* noop */ }
+    } catch (e) {
+      /* noop */
+    }
     return [];
   }
   // 在消息类型上按 localName 查字段（含 oneof 内部成员）
@@ -219,7 +243,14 @@
       result = { kind: "direct" };
     } else {
       // 2) 优先路径
-      var prefer = ["streamUnifiedChatResponse", "realResponse", "serverChunk", "response", "chat", "editStream"];
+      var prefer = [
+        "streamUnifiedChatResponse",
+        "realResponse",
+        "serverChunk",
+        "response",
+        "chat",
+        "editStream",
+      ];
       for (var pi = 0; pi < prefer.length && !result; pi++) {
         var pf = findFieldDeep(RespT, prefer[pi]);
         if (pf && pf.kind === "message" && pf.T) {
@@ -257,7 +288,8 @@
         var p = {};
         if (isThinking) {
           var th = findFieldDeep(leafT, "thinking");
-          if (th && th.kind === "message") return setField(p, th, { text: chunk });
+          if (th && th.kind === "message")
+            return setField(p, th, { text: chunk });
           return null;
         }
         return setField(p, findFieldDeep(leafT, "text"), chunk);
@@ -267,13 +299,21 @@
       var p2 = {};
       return setField(p2, em.field, inner);
     }
-    var partial = buildDeep(emitter, textChunk || thinkingChunk, !!thinkingChunk);
+    var partial = buildDeep(
+      emitter,
+      textChunk || thinkingChunk,
+      !!thinkingChunk,
+    );
     if (partial === null) return null;
     return new RespT(partial);
   }
   function leafTypeOf(emitter, RespT) {
-    var em = emitter, T = RespT;
-    while (em && em.kind === "wrap") { T = em.field.T; em = em.sub; }
+    var em = emitter,
+      T = RespT;
+    while (em && em.kind === "wrap") {
+      T = em.field.T;
+      em = em.sub;
+    }
     return T;
   }
 
@@ -283,7 +323,11 @@
     if (f && f.kind === "message") {
       var p = {};
       setField(p, f, {});
-      try { return new RespT(p); } catch (e) { return null; }
+      try {
+        return new RespT(p);
+      } catch (e) {
+        return null;
+      }
     }
     return null;
   }
@@ -298,14 +342,19 @@
     for (var i = 0; i < conv.length; i++) {
       var m = conv[i];
       if (!m) continue;
-      var role = (m.type === 2) ? "assistant" : "user";
+      var role = m.type === 2 ? "assistant" : "user";
       var parts = [];
       if (m.text) parts.push(String(m.text));
       var chunks = m.attachedCodeChunks || [];
       for (var c = 0; c < chunks.length; c++) {
         var ch = chunks[c];
         if (ch && ch.lines && ch.lines.length) {
-          parts.push("\n[" + (ch.relativeWorkspacePath || "attached-file") + "]\n" + ch.lines.join("\n"));
+          parts.push(
+            "\n[" +
+              (ch.relativeWorkspacePath || "attached-file") +
+              "]\n" +
+              ch.lines.join("\n"),
+          );
         }
       }
       var trs = m.toolResults || [];
@@ -315,7 +364,9 @@
         try {
           txt = tr && (tr.text || (tr.result && tr.result.text) || "");
           if (!txt && tr && tr.toJson) txt = JSON.stringify(tr.toJson());
-        } catch (e) { txt = ""; }
+        } catch (e) {
+          txt = "";
+        }
         if (txt) parts.push("\n[tool result]\n" + String(txt));
       }
       var text = parts.join("\n").trim();
@@ -346,19 +397,36 @@
           if (v.query) query = String(v.query);
           break;
         case "cmdKSelection":
-          if (v.lines && v.lines.length) sel = { lines: v.lines, startLineNumber: v.startLineNumber || 1 };
+          if (v.lines && v.lines.length)
+            sel = { lines: v.lines, startLineNumber: v.startLineNumber || 1 };
           break;
         case "cmdKImmediateContext":
           if (v.lines && v.lines.length) {
             var lines = [];
-            for (var L = 0; L < v.lines.length; L++) lines.push(v.lines[L].line || "");
-            ctxParts.push("[file: " + (v.relativeWorkspacePath || "current") + " lines " +
-              (v.lines[0].lineNumber || "?") + "-" + (v.lines[v.lines.length - 1].lineNumber || "?") + "]\n" + lines.join("\n"));
+            for (var L = 0; L < v.lines.length; L++)
+              lines.push(v.lines[L].line || "");
+            ctxParts.push(
+              "[file: " +
+                (v.relativeWorkspacePath || "current") +
+                " lines " +
+                (v.lines[0].lineNumber || "?") +
+                "-" +
+                (v.lines[v.lines.length - 1].lineNumber || "?") +
+                "]\n" +
+                lines.join("\n"),
+            );
           }
           break;
         case "fileChunk":
           if (v.chunkContents) {
-            ctxParts.push("[file: " + (v.relativeWorkspacePath || "context") + " from line " + (v.startLineNumber || 1) + "]\n" + v.chunkContents);
+            ctxParts.push(
+              "[file: " +
+                (v.relativeWorkspacePath || "context") +
+                " from line " +
+                (v.startLineNumber || 1) +
+                "]\n" +
+                v.chunkContents,
+            );
           }
           break;
       }
@@ -371,13 +439,26 @@
     }
     var selBlock = "";
     if (sel) {
-      selBlock = "\n\nSelected code (lines " + sel.startLineNumber + "-" + (sel.startLineNumber + sel.lines.length - 1) + "):\n" + sel.lines.join("\n");
+      selBlock =
+        "\n\nSelected code (lines " +
+        sel.startLineNumber +
+        "-" +
+        (sel.startLineNumber + sel.lines.length - 1) +
+        "):\n" +
+        sel.lines.join("\n");
     }
-    var ctxBlock = ctxParts.length ? "\n\n" + ctxParts.join("\n\n").slice(0, 12000) : "";
+    var ctxBlock = ctxParts.length
+      ? "\n\n" + ctxParts.join("\n\n").slice(0, 12000)
+      : "";
     var instruction = sel
       ? "You are a code editing assistant in an IDE. Replace the selected code according to the instruction. Output ONLY the replacement code, no markdown fences, no explanation."
       : "You are an assistant in an IDE. Answer the user's instruction.";
-    var content = instruction + "\n\nInstruction: " + (query || "(no instruction)") + selBlock + ctxBlock;
+    var content =
+      instruction +
+      "\n\nInstruction: " +
+      (query || "(no instruction)") +
+      selBlock +
+      ctxBlock;
     return { messages: [{ role: "user", content: content }], sel: sel };
   }
 
@@ -393,7 +474,9 @@
       var r = cur.request;
       if (!r || !r.case || !r.value) return null;
       if (r.case === "clientChunk" || r.case === "streamUnifiedChatRequest") {
-        cur = r.value; d++; continue;
+        cur = r.value;
+        d++;
+        continue;
       }
       return null; // abort/close/clientSideToolV2Result 等控制包
     }
@@ -406,7 +489,8 @@
     for (var i = 0; i < collected.length; i++) {
       var d = unwrapChatRequest(collected[i], 0);
       if (!d) continue;
-      if (d.conversation) merged.conversation = merged.conversation.concat(d.conversation);
+      if (d.conversation)
+        merged.conversation = merged.conversation.concat(d.conversation);
       if (d.modelDetails) merged.modelDetails = d.modelDetails;
       if (d.requestContext) merged.requestContext = d.requestContext;
     }
@@ -417,17 +501,28 @@
     var mapping = CFG.modelMapping || {};
     var asked = "";
     try {
-      asked = (req.modelDetails && req.modelDetails.modelName) ||
-              (req.cmdKOptions && req.cmdKOptions.modelDetails && req.cmdKOptions.modelDetails.modelName) ||
-              (req.requestedModel && req.requestedModel.modelId) || "";
-    } catch (e) { asked = ""; }
+      asked =
+        (req.modelDetails && req.modelDetails.modelName) ||
+        (req.cmdKOptions &&
+          req.cmdKOptions.modelDetails &&
+          req.cmdKOptions.modelDetails.modelName) ||
+        (req.requestedModel && req.requestedModel.modelId) ||
+        "";
+    } catch (e) {
+      asked = "";
+    }
     asked = String(asked || "");
     if (mapping[asked]) return mapping[asked];
     // 前缀匹配: deepseek-v4-flash → deepseek-* 等
     var keys = Object.keys(mapping);
     for (var i = 0; i < keys.length; i++) {
       var k = keys[i];
-      if (k !== "*" && k.length > 2 && asked.toLowerCase().indexOf(k.toLowerCase()) === 0) return mapping[k];
+      if (
+        k !== "*" &&
+        k.length > 2 &&
+        asked.toLowerCase().indexOf(k.toLowerCase()) === 0
+      )
+        return mapping[k];
     }
     return mapping["*"] || CFG.defaultModel || "deepseek-v4-flash";
   }
@@ -461,7 +556,9 @@
       for (var i = 0; i < keys.length; i++) {
         if (keys[i] !== oneofName && container[keys[i]] != null) return keys[i];
       }
-    } catch (e) { /* noop */ }
+    } catch (e) {
+      /* noop */
+    }
     return "";
   }
   function oneofValue(container, oneofName, caseName) {
@@ -469,54 +566,75 @@
       var g = container && container[oneofName];
       if (g && g.case === caseName) return g.value;
       if (container && container[caseName] != null) return container[caseName];
-    } catch (e) { /* noop */ }
+    } catch (e) {
+      /* noop */
+    }
     return null;
   }
   function agentRunToPlan(list) {
     var rr = null;
     for (var i = 0; i < list.length; i++) {
       var mo = list[i] && list[i].message;
-      if (mo && mo.case === "runRequest" && mo.value) { rr = mo.value; break; }
+      if (mo && mo.case === "runRequest" && mo.value) {
+        rr = mo.value;
+        break;
+      }
     }
     if (!rr) return null;
     var act = rr.action || {};
     var aCase = oneofCase(act, "action");
     var uma = oneofValue(act, "action", "userMessageAction");
     var um = uma && uma.userMessage;
-    var text = (um && um.text) ? String(um.text) : "";
+    var text = um && um.text ? String(um.text) : "";
     // requestContext 双位置兼容(3.16.17 实测 dump):
     //   新: action.userMessageAction.requestContext (env/tools/mcpInstructions...)
     //   旧: runRequest.requestContext (顶层)
-    var rc = null, rcFrom = "none";
-    if (rr.requestContext) { rc = rr.requestContext; rcFrom = "runRequest"; }
-    else if (uma && uma.requestContext) { rc = uma.requestContext; rcFrom = "userMessageAction"; }
+    var rc = null,
+      rcFrom = "none";
+    if (rr.requestContext) {
+      rc = rr.requestContext;
+      rcFrom = "runRequest";
+    } else if (uma && uma.requestContext) {
+      rc = uma.requestContext;
+      rcFrom = "userMessageAction";
+    }
     return {
       text: text,
       convId: rr.conversationId ? String(rr.conversationId) : "",
-      customSystemPrompt: rr.customSystemPrompt ? String(rr.customSystemPrompt) : "",
+      customSystemPrompt: rr.customSystemPrompt
+        ? String(rr.customSystemPrompt)
+        : "",
       requestContext: rc,
       rcFrom: rcFrom,
       system: "", // 由 buildAgentSystemPrompt 组装
-      modelReq: { modelDetails: rr.modelDetails || null, requestedModel: rr.requestedModel || null },
-      actionCase: aCase
+      modelReq: {
+        modelDetails: rr.modelDetails || null,
+        requestedModel: rr.requestedModel || null,
+      },
+      actionCase: aCase,
     };
   }
 
   /* ---------- 本地重组装: Cursor 风格系统提示词(替代服务端 prompt 组装) ---------- */
   // 目录树递归展开(LsDirectoryTreeNode: absPath/childrenDirs/childrenFiles/numFiles)
   function layoutLines(nodes, depth, maxDepth, out, maxLines) {
-    if (!nodes || !nodes.length || depth > maxDepth || out.length >= maxLines) return;
+    if (!nodes || !nodes.length || depth > maxDepth || out.length >= maxLines)
+      return;
     for (var i = 0; i < nodes.length && out.length < maxLines; i++) {
       var n = nodes[i];
       if (!n || !n.absPath) continue;
-      var base = String(n.absPath).replace(/^.*[\\\/]/, "");
-      var meta = (n.numFiles != null ? " (" + n.numFiles + " files)" : "");
+      var base = String(n.absPath).replace(/^.*[\\/]/, "");
+      var meta = n.numFiles == null ? "" : " (" + n.numFiles + " files)";
       out.push(new Array(depth + 1).join("  ") + base + "/" + meta);
       var dirs = n.childrenDirs || [];
       var files = n.childrenFiles || [];
       for (var f = 0; f < files.length && out.length < maxLines; f++) {
         var fe = files[f];
-        var fb = fe ? String(fe.absPath || fe.name || fe.relativeWorkspacePath || "").replace(/^.*[\\\/]/, "") : "";
+        var fb = fe
+          ? String(
+              fe.absPath || fe.name || fe.relativeWorkspacePath || "",
+            ).replace(/^.*[\\/]/, "")
+          : "";
         if (fb) out.push(new Array(depth + 2).join("  ") + fb);
       }
       layoutLines(dirs, depth + 1, maxDepth, out, maxLines);
@@ -547,14 +665,22 @@
       for (var r = 0; r < rc.rules.length; r++) {
         var rule = rc.rules[r];
         if (rule && rule.content) {
-          var tag = rule.fullPath ? " (from " + String(rule.fullPath).replace(/^.*[\\\/]/, "") + ")" : "";
+          var tag = rule.fullPath
+            ? " (from " + String(rule.fullPath).replace(/^.*[\\/]/, "") + ")"
+            : "";
           rl.push(String(rule.content) + tag);
         }
       }
-      if (rl.length) parts.push("# Project rules\n" + rl.join("\n\n").slice(0, 20000));
+      if (rl.length)
+        parts.push("# Project rules\n" + rl.join("\n\n").slice(0, 20000));
     }
     // 仓库信息
-    if (ctx.repo !== false && rc && rc.repositoryInfo && rc.repositoryInfo.length) {
+    if (
+      ctx.repo !== false &&
+      rc &&
+      rc.repositoryInfo &&
+      rc.repositoryInfo.length
+    ) {
       var repos = [];
       for (var q = 0; q < rc.repositoryInfo.length; q++) {
         var ri = rc.repositoryInfo[q];
@@ -569,10 +695,21 @@
       if (repos.length) parts.push("# Git repositories\n" + repos.join("\n"));
     }
     // 项目目录树
-    if (ctx.layout !== false && rc && rc.projectLayouts && rc.projectLayouts.length) {
+    if (
+      ctx.layout !== false &&
+      rc &&
+      rc.projectLayouts &&
+      rc.projectLayouts.length
+    ) {
       var maxLines = ctx.layoutMaxLines || 160;
       var lines = [];
-      layoutLines(rc.projectLayouts, 0, ctx.layoutMaxDepth || 4, lines, maxLines);
+      layoutLines(
+        rc.projectLayouts,
+        0,
+        ctx.layoutMaxDepth || 4,
+        lines,
+        maxLines,
+      );
       if (lines.length) {
         var tree = lines.join("\n");
         if (lines.length >= maxLines) tree += "\n... (truncated)";
@@ -584,7 +721,8 @@
       var mi = rc.mcpInstructions || [];
       var mcpParts = [];
       for (var m2 = 0; m2 < mi.length; m2++) {
-        if (mi[m2] && (mi[m2].content || mi[m2].instructions)) mcpParts.push(String(mi[m2].content || mi[m2].instructions));
+        if (mi[m2] && (mi[m2].content || mi[m2].instructions))
+          mcpParts.push(String(mi[m2].content || mi[m2].instructions));
       }
       // inputSchemaJson 门控(默认关闭): 20+ Cursor 内置浏览器工具 schema 会撑爆提示词,
       // 且这些工具在本会话无执行通道, 列出 schema 反而诱导模型调用不可执行工具
@@ -594,8 +732,15 @@
       for (var t2 = 0; t2 < tl.length && toolDescs.length < 60; t2++) {
         var td = tl[t2];
         if (!td || !td.name) continue;
-        var d = "- " + td.providerIdentifier + "/" + td.toolName + ": " + String(td.description || "").slice(0, 200);
-        if (withSchemas && td.inputSchemaJson) d += "\n  schema: " + String(td.inputSchemaJson).slice(0, 800);
+        var d =
+          "- " +
+          td.providerIdentifier +
+          "/" +
+          td.toolName +
+          ": " +
+          String(td.description || "").slice(0, 200);
+        if (withSchemas && td.inputSchemaJson)
+          d += "\n  schema: " + String(td.inputSchemaJson).slice(0, 800);
         toolDescs.push(d);
       }
       if (mcpParts.length || toolDescs.length) {
@@ -620,24 +765,72 @@
    *   4. 结果序列化回 OpenAI role:"tool" 消息 → 下一轮上游调用
    *   5. 直到模型输出纯文本 → turnEnded
    * ============================================================ */
-  var AGENT_TOOLS_ON = CFG.agentTools !== false;       // 默认开启
+  var AGENT_TOOLS_ON = CFG.agentTools !== false; // 默认开启
   var AGENT_TOOL_TIMEOUT = CFG.agentToolTimeoutMs || 30000;
   // Agent/Chat tool-loop rounds: unlimited — break on natural stop (no tool calls or tools off)
-  var AGENT_HB_MS = (CFG.agentHeartbeatMs > 0) ? CFG.agentHeartbeatMs : 2000;
+  var AGENT_HB_MS = CFG.agentHeartbeatMs > 0 ? CFG.agentHeartbeatMs : 2000;
   // OpenAI 函数名 → agent.v1 映射(仅保留有独立 exec 通道的工具: glob/semantic 无 result 通道已移除)
   var AGENT_TOOL_MAP = {
-    read_file:        { caseName: "readToolCall",       execCase: "readArgs",        argKeys: { path: "path", offset: "offset", limit: "limit" } },
-    grep_search:      { caseName: "grepToolCall",       execCase: "grepArgs",        argKeys: { pattern: "pattern", path: "path", glob: "glob", outputMode: "output_mode", contextBefore: "context_before", contextAfter: "context_after" } },
-    list_dir:         { caseName: "lsToolCall",         execCase: "lsArgs",          argKeys: { path: "path" } },
-    write_file:       { caseName: "editToolCall",       execCase: "writeArgs",       argKeys: { path: "path", fileText: "content" }, uiArgKeys: { path: "path", streamContent: "content" } },
-    run_terminal_cmd: { caseName: "shellToolCall",      execCase: "shellArgs",       argKeys: { command: "command", workingDirectory: "working_directory" } },
-    web_fetch:        { caseName: "fetchToolCall",      execCase: "fetchArgs",       argKeys: { url: "url" } },
-    delete_file:      { caseName: "deleteToolCall",     execCase: "deleteArgs",      argKeys: { path: "path" } },
-    read_lints:       { caseName: "readLintsToolCall",  execCase: "diagnosticsArgs", argKeys: { path: "path" }, uiArgKeys: { paths: "path" } }
+    read_file: {
+      caseName: "readToolCall",
+      execCase: "readArgs",
+      argKeys: { path: "path", offset: "offset", limit: "limit" },
+    },
+    grep_search: {
+      caseName: "grepToolCall",
+      execCase: "grepArgs",
+      argKeys: {
+        pattern: "pattern",
+        path: "path",
+        glob: "glob",
+        outputMode: "output_mode",
+        contextBefore: "context_before",
+        contextAfter: "context_after",
+      },
+    },
+    list_dir: {
+      caseName: "lsToolCall",
+      execCase: "lsArgs",
+      argKeys: { path: "path" },
+    },
+    write_file: {
+      caseName: "editToolCall",
+      execCase: "writeArgs",
+      argKeys: { path: "path", fileText: "content" },
+      uiArgKeys: { path: "path", streamContent: "content" },
+    },
+    edit_file: {
+      caseName: "editToolCall",
+      execCase: "writeArgs",
+      argKeys: { path: "path", fileText: "content" },
+      localOnly: true,
+    },
+    run_terminal_cmd: {
+      caseName: "shellToolCall",
+      execCase: "shellArgs",
+      argKeys: { command: "command", workingDirectory: "working_directory" },
+    },
+    web_fetch: {
+      caseName: "fetchToolCall",
+      execCase: "fetchArgs",
+      argKeys: { url: "url" },
+    },
+    delete_file: {
+      caseName: "deleteToolCall",
+      execCase: "deleteArgs",
+      argKeys: { path: "path" },
+    },
+    read_lints: {
+      caseName: "readLintsToolCall",
+      execCase: "diagnosticsArgs",
+      argKeys: { path: "path" },
+      uiArgKeys: { paths: "path" },
+    },
   };
   var AGENT_MCP_ENTRY = { caseName: "mcpToolCall", execCase: "mcpArgs" };
   function resolveAgentTool(name, mcpTools) {
-    if (Object.prototype.hasOwnProperty.call(AGENT_TOOL_MAP, name)) return { entry: AGENT_TOOL_MAP[name], mcp: null };
+    if (Object.hasOwn(AGENT_TOOL_MAP, name))
+      return { entry: AGENT_TOOL_MAP[name], mcp: null };
     if (mcpTools && mcpTools.length) {
       for (var i = 0; i < mcpTools.length; i++) {
         var td = mcpTools[i];
@@ -649,8 +842,11 @@
   function wrapJsonValue(ValueT, v) {
     try {
       if (ValueT && typeof ValueT.wrap === "function") return ValueT.wrap(v);
-      if (ValueT && typeof ValueT.fromJson === "function") return ValueT.fromJson(v);
-    } catch (e) { /* fallthrough */ }
+      if (ValueT && typeof ValueT.fromJson === "function")
+        return ValueT.fromJson(v);
+    } catch (e) {
+      /* fallthrough */
+    }
     return v;
   }
   function isWellKnownJsonT(T) {
@@ -666,7 +862,8 @@
       if (!f) continue;
       if (f.kind === "map") {
         var mo = {};
-        for (var mk in v) mo[mk] = (f.V && f.V.T) ? wrapJsonValue(f.V.T, v[mk]) : v[mk];
+        for (var mk in v)
+          mo[mk] = f.V && f.V.T ? wrapJsonValue(f.V.T, v[mk]) : v[mk];
         setField(out, f, mo);
       } else if (f.kind === "message" && f.T) {
         if (f.repeated) {
@@ -674,7 +871,11 @@
           var wa = [];
           for (var ai = 0; ai < arr.length; ai++) {
             var item = arr[ai];
-            wa.push(isWellKnownJsonT(f.T) ? wrapJsonValue(f.T, item) : new f.T(partialFor(f.T, item)));
+            wa.push(
+              isWellKnownJsonT(f.T)
+                ? wrapJsonValue(f.T, item)
+                : new f.T(partialFor(f.T, item)),
+            );
           }
           setField(out, f, wa);
         } else if (isWellKnownJsonT(f.T)) {
@@ -694,8 +895,10 @@
     var p = {};
     if (findFieldDeep(ArgsT, "toolCallId")) p.toolCallId = callId;
     if (td.name && findFieldDeep(ArgsT, "name")) p.name = td.name;
-    if (td.providerIdentifier && findFieldDeep(ArgsT, "providerIdentifier")) p.providerIdentifier = td.providerIdentifier;
-    if (td.toolName && findFieldDeep(ArgsT, "toolName")) p.toolName = td.toolName;
+    if (td.providerIdentifier && findFieldDeep(ArgsT, "providerIdentifier"))
+      p.providerIdentifier = td.providerIdentifier;
+    if (td.toolName && findFieldDeep(ArgsT, "toolName"))
+      p.toolName = td.toolName;
     var f = findFieldDeep(ArgsT, "args");
     if (f && f.kind === "map" && f.V && f.V.T) {
       var mo = {};
@@ -707,13 +910,24 @@
   // 解析 MCP inputSchemaJson -> OpenAI function parameters(异常兜底为开放 object)
   function mcpToolParamsSchema(td) {
     var raw = td.inputSchemaJson;
-    if (typeof raw === "string") { try { raw = JSON.parse(raw); } catch (e) { raw = null; } }
+    if (typeof raw === "string") {
+      try {
+        raw = JSON.parse(raw);
+      } catch (e) {
+        raw = null;
+      }
+    }
     if (!raw || typeof raw !== "object") raw = {};
     var p = { type: "object" };
-    if (raw.properties && typeof raw.properties === "object") p.properties = raw.properties;
+    if (raw.properties && typeof raw.properties === "object")
+      p.properties = raw.properties;
     if (Array.isArray(raw.required)) p.required = raw.required;
-    if (raw.additionalProperties !== undefined) p.additionalProperties = raw.additionalProperties;
-    if (!p.properties) { p.properties = {}; p.additionalProperties = true; }
+    if (raw.additionalProperties !== undefined)
+      p.additionalProperties = raw.additionalProperties;
+    if (!p.properties) {
+      p.properties = {};
+      p.additionalProperties = true;
+    }
     return p;
   }
   function mcpToolSchemas(mcpTools, cap) {
@@ -723,20 +937,212 @@
     for (var i = 0; i < mcpTools.length && out.length < max; i++) {
       var td = mcpTools[i];
       if (!td || !td.name) continue;
-      out.push({ type: "function", function: { name: td.name, description: String(td.description || ("MCP tool " + td.name)).slice(0, 600), parameters: mcpToolParamsSchema(td) } });
+      out.push({
+        type: "function",
+        function: {
+          name: td.name,
+          description: String(td.description || "MCP tool " + td.name).slice(
+            0,
+            600,
+          ),
+          parameters: mcpToolParamsSchema(td),
+        },
+      });
     }
     return out;
   }
   function agentToolSchemas(mcpTools) {
     var defs = [
-      { type: "function", function: { name: "read_file", description: "Read the contents of a file. Returns file content, optionally numbered lines.", parameters: { type: "object", properties: { path: { type: "string", description: "Absolute or workspace-relative file path" }, offset: { type: "integer", description: "Line number to start from (1-based, optional)" }, limit: { type: "integer", description: "Max number of lines to read (optional)" } }, required: ["path"] } } },
-      { type: "function", function: { name: "grep_search", description: "Regex search across files in the workspace (ripgrep-powered). Use output_mode 'content' to see matching lines with line numbers, 'files_with_matches' to list files, 'count' for counts.", parameters: { type: "object", properties: { pattern: { type: "string", description: "Regular expression pattern" }, path: { type: "string", description: "File or directory to search in (optional, defaults to workspace)" }, glob: { type: "string", description: "Glob filter, e.g. '*.py' (optional)" }, output_mode: { type: "string", enum: ["content", "files_with_matches", "count"], description: "Output format (optional)" }, context_before: { type: "integer", description: "Lines of context before match (optional)" }, context_after: { type: "integer", description: "Lines of context after match (optional)" } }, required: ["pattern"] } } },
-      { type: "function", function: { name: "list_dir", description: "List immediate files and subdirectories of a directory.", parameters: { type: "object", properties: { path: { type: "string", description: "Directory path" } }, required: ["path"] } } },
-      { type: "function", function: { name: "write_file", description: "Create or overwrite a file with the given full content.", parameters: { type: "object", properties: { path: { type: "string", description: "File path to write" }, content: { type: "string", description: "Full file content to write" } }, required: ["path", "content"] } } },
-      { type: "function", function: { name: "run_terminal_cmd", description: "Run a shell command in the workspace and return output. Use sparingly for build/test/git operations.", parameters: { type: "object", properties: { command: { type: "string", description: "Shell command to execute" }, working_directory: { type: "string", description: "Working directory (optional)" } }, required: ["command"] } } },
-      { type: "function", function: { name: "web_fetch", description: "Fetch a URL and return the page content.", parameters: { type: "object", properties: { url: { type: "string", description: "URL to fetch" } }, required: ["url"] } } },
-      { type: "function", function: { name: "delete_file", description: "Delete a file in the workspace.", parameters: { type: "object", properties: { path: { type: "string", description: "File path to delete" } }, required: ["path"] } } },
-      { type: "function", function: { name: "read_lints", description: "Read lint/diagnostic errors for a file.", parameters: { type: "object", properties: { path: { type: "string", description: "File path to inspect" } }, required: ["path"] } } }
+      {
+        type: "function",
+        function: {
+          name: "read_file",
+          description:
+            "Read the contents of a file. Returns file content, optionally numbered lines.",
+          parameters: {
+            type: "object",
+            properties: {
+              path: {
+                type: "string",
+                description: "Absolute or workspace-relative file path",
+              },
+              offset: {
+                type: "integer",
+                description: "Line number to start from (1-based, optional)",
+              },
+              limit: {
+                type: "integer",
+                description: "Max number of lines to read (optional)",
+              },
+            },
+            required: ["path"],
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "grep_search",
+          description:
+            "Regex search across files in the workspace (ripgrep-powered). Use output_mode 'content' to see matching lines with line numbers, 'files_with_matches' to list files, 'count' for counts.",
+          parameters: {
+            type: "object",
+            properties: {
+              pattern: {
+                type: "string",
+                description: "Regular expression pattern",
+              },
+              path: {
+                type: "string",
+                description:
+                  "File or directory to search in (optional, defaults to workspace)",
+              },
+              glob: {
+                type: "string",
+                description: "Glob filter, e.g. '*.py' (optional)",
+              },
+              output_mode: {
+                type: "string",
+                enum: ["content", "files_with_matches", "count"],
+                description: "Output format (optional)",
+              },
+              context_before: {
+                type: "integer",
+                description: "Lines of context before match (optional)",
+              },
+              context_after: {
+                type: "integer",
+                description: "Lines of context after match (optional)",
+              },
+            },
+            required: ["pattern"],
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "list_dir",
+          description:
+            "List immediate files and subdirectories of a directory.",
+          parameters: {
+            type: "object",
+            properties: {
+              path: { type: "string", description: "Directory path" },
+            },
+            required: ["path"],
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "write_file",
+          description:
+            "Create or overwrite a file with the given full content. You MUST include the ENTIRE file content, not just the changed parts.",
+          parameters: {
+            type: "object",
+            properties: {
+              path: { type: "string", description: "File path to write" },
+              content: {
+                type: "string",
+                description: "Full file content to write",
+              },
+            },
+            required: ["path", "content"],
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "edit_file",
+          description:
+            "Edit a file by replacing an exact string match. PREFERRED over write_file for modifications. Provide the exact old_string to find and the new_string to replace it with. Preserves all content outside the match.",
+          parameters: {
+            type: "object",
+            properties: {
+              path: { type: "string", description: "File path to edit" },
+              old_string: {
+                type: "string",
+                description:
+                  "Exact string to find and replace (must match including whitespace/indentation)",
+              },
+              new_string: { type: "string", description: "Replacement string" },
+              replaceAll: {
+                type: "boolean",
+                description:
+                  "Replace all occurrences instead of just the first (default: false)",
+              },
+            },
+            required: ["path", "old_string", "new_string"],
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "run_terminal_cmd",
+          description:
+            "Run a shell command in the workspace and return output. Use sparingly for build/test/git operations.",
+          parameters: {
+            type: "object",
+            properties: {
+              command: {
+                type: "string",
+                description: "Shell command to execute",
+              },
+              working_directory: {
+                type: "string",
+                description: "Working directory (optional)",
+              },
+            },
+            required: ["command"],
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "web_fetch",
+          description: "Fetch a URL and return the page content.",
+          parameters: {
+            type: "object",
+            properties: {
+              url: { type: "string", description: "URL to fetch" },
+            },
+            required: ["url"],
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "delete_file",
+          description: "Delete a file in the workspace.",
+          parameters: {
+            type: "object",
+            properties: {
+              path: { type: "string", description: "File path to delete" },
+            },
+            required: ["path"],
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "read_lints",
+          description: "Read lint/diagnostic errors for a file.",
+          parameters: {
+            type: "object",
+            properties: {
+              path: { type: "string", description: "File path to inspect" },
+            },
+            required: ["path"],
+          },
+        },
+      },
     ];
     return defs.concat(mcpToolSchemas(mcpTools));
   }
@@ -749,20 +1155,61 @@
    *   -> 客户端执行 -> clientSideToolV2Result -> role:"tool" 回填 -> 下一轮
    * ============================================================ */
   var CHAT_TOOL_MAP = {
-    read_file:        { tool: "READ_FILE_V2",           paramsCase: "readFileV2Params",           map: { targetFile: "path", offset: "offset", limit: "limit" } },
-    grep_search:      { tool: "RIPGREP_SEARCH",         paramsCase: "ripgrepSearchParams",
-      build: function (a) { return { patternInfo: { pattern: String(a.pattern != null ? a.pattern : ""), isRegExp: a.is_reg_exp !== false, isCaseSensitive: !!a.is_case_sensitive } }; } },
-    list_dir:         { tool: "LIST_DIR_V2",            paramsCase: "listDirV2Params",            map: { targetDirectory: "path" } },
-    glob_search:      { tool: "GLOB_FILE_SEARCH",       paramsCase: "globFileSearchParams",        map: { targetDirectory: "path", globPattern: "pattern" } },
-    delete_file:      { tool: "DELETE_FILE",            paramsCase: "deleteFileParams",           map: { relativeWorkspacePath: "path" } },
-    run_terminal_cmd: { tool: "RUN_TERMINAL_COMMAND_V2", paramsCase: "runTerminalCommandV2Params",
-      build: function (a) { return { command: a.command, cwd: a.working_directory, requireUserApproval: true }; } },
-    web_fetch:        { tool: "WEB_FETCH",              paramsCase: "webFetchParams",             map: { url: "url" } }
+    read_file: {
+      tool: "READ_FILE_V2",
+      paramsCase: "readFileV2Params",
+      map: { targetFile: "path", offset: "offset", limit: "limit" },
+    },
+    grep_search: {
+      tool: "RIPGREP_SEARCH",
+      paramsCase: "ripgrepSearchParams",
+      build: (a) => ({
+        patternInfo: {
+          pattern: String(a.pattern == null ? "" : a.pattern),
+          isRegExp: a.is_reg_exp !== false,
+          isCaseSensitive: !!a.is_case_sensitive,
+        },
+      }),
+    },
+    list_dir: {
+      tool: "LIST_DIR_V2",
+      paramsCase: "listDirV2Params",
+      map: { targetDirectory: "path" },
+    },
+    glob_search: {
+      tool: "GLOB_FILE_SEARCH",
+      paramsCase: "globFileSearchParams",
+      map: { targetDirectory: "path", globPattern: "pattern" },
+    },
+    delete_file: {
+      tool: "DELETE_FILE",
+      paramsCase: "deleteFileParams",
+      map: { relativeWorkspacePath: "path" },
+    },
+    run_terminal_cmd: {
+      tool: "RUN_TERMINAL_COMMAND_V2",
+      paramsCase: "runTerminalCommandV2Params",
+      build: (a) => ({
+        command: a.command,
+        cwd: a.working_directory,
+        requireUserApproval: true,
+      }),
+    },
+    web_fetch: {
+      tool: "WEB_FETCH",
+      paramsCase: "webFetchParams",
+      map: { url: "url" },
+    },
+    edit_file: { tool: null, paramsCase: null, localOnly: true },
   };
-  var CHAT_MCP_CFG = { tool: "CALL_MCP_TOOL", paramsCase: "callMcpToolParams", mcp: true };
+  var CHAT_MCP_CFG = {
+    tool: "CALL_MCP_TOOL",
+    paramsCase: "callMcpToolParams",
+    mcp: true,
+  };
   // 枚举成员存在性校验(不同版本协议成员集可能不同), MCP 工具按 td.name 精确匹配
   function resolveChatTool(name, enumT, mcpTools) {
-    var cfg = Object.prototype.hasOwnProperty.call(CHAT_TOOL_MAP, name) ? CHAT_TOOL_MAP[name] : null;
+    var cfg = Object.hasOwn(CHAT_TOOL_MAP, name) ? CHAT_TOOL_MAP[name] : null;
     if (cfg && enumT && enumT[cfg.tool] != null) return { cfg: cfg, mcp: null };
     if (enumT && enumT.CALL_MCP_TOOL != null && mcpTools && mcpTools.length) {
       for (var i = 0; i < mcpTools.length; i++) {
@@ -774,20 +1221,191 @@
   }
   function chatToolSchemas(enumT, mcpTools) {
     var defs = [
-      { type: "function", function: { name: "read_file", description: "Read the contents of a file. Returns file content, optionally numbered lines.", parameters: { type: "object", properties: { path: { type: "string", description: "Absolute or workspace-relative file path" }, offset: { type: "integer", description: "Line number to start from (1-based, optional)" }, limit: { type: "integer", description: "Max number of lines to read (optional)" } }, required: ["path"] } } },
-      { type: "function", function: { name: "grep_search", description: "Regex search across files in the workspace (ripgrep-powered). Use output_mode 'content' to see matching lines with line numbers, 'files_with_matches' to list files, 'count' for counts.", parameters: { type: "object", properties: { pattern: { type: "string", description: "Regular expression pattern" }, path: { type: "string", description: "File or directory to search in (optional, defaults to workspace)" }, glob: { type: "string", description: "Glob filter, e.g. '*.py' (optional)" }, output_mode: { type: "string", enum: ["content", "files_with_matches", "count"], description: "Output format (optional)" }, context_before: { type: "integer", description: "Lines of context before match (optional)" }, context_after: { type: "integer", description: "Lines of context after match (optional)" } }, required: ["pattern"] } } },
-      { type: "function", function: { name: "list_dir", description: "List immediate files and subdirectories of a directory.", parameters: { type: "object", properties: { path: { type: "string", description: "Directory path" } }, required: ["path"] } } },
-      { type: "function", function: { name: "glob_search", description: "Fast file pattern matching using glob patterns.", parameters: { type: "object", properties: { pattern: { type: "string", description: "Glob pattern, e.g. '**/*.py'" }, path: { type: "string", description: "Directory to search in (optional, defaults to workspace)" } }, required: ["pattern"] } } },
-      { type: "function", function: { name: "delete_file", description: "Delete a file in the workspace.", parameters: { type: "object", properties: { path: { type: "string", description: "File path to delete" } }, required: ["path"] } } },
-      { type: "function", function: { name: "run_terminal_cmd", description: "Run a shell command in the workspace and return output. Use sparingly for build/test/git operations.", parameters: { type: "object", properties: { command: { type: "string", description: "Shell command to execute" }, working_directory: { type: "string", description: "Working directory (optional)" } }, required: ["command"] } } },
-      { type: "function", function: { name: "web_fetch", description: "Fetch a URL and return the page content.", parameters: { type: "object", properties: { url: { type: "string", description: "URL to fetch" } }, required: ["url"] } } }
+      {
+        type: "function",
+        function: {
+          name: "read_file",
+          description:
+            "Read the contents of a file. Returns file content, optionally numbered lines.",
+          parameters: {
+            type: "object",
+            properties: {
+              path: {
+                type: "string",
+                description: "Absolute or workspace-relative file path",
+              },
+              offset: {
+                type: "integer",
+                description: "Line number to start from (1-based, optional)",
+              },
+              limit: {
+                type: "integer",
+                description: "Max number of lines to read (optional)",
+              },
+            },
+            required: ["path"],
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "grep_search",
+          description:
+            "Regex search across files in the workspace (ripgrep-powered). Use output_mode 'content' to see matching lines with line numbers, 'files_with_matches' to list files, 'count' for counts.",
+          parameters: {
+            type: "object",
+            properties: {
+              pattern: {
+                type: "string",
+                description: "Regular expression pattern",
+              },
+              path: {
+                type: "string",
+                description:
+                  "File or directory to search in (optional, defaults to workspace)",
+              },
+              glob: {
+                type: "string",
+                description: "Glob filter, e.g. '*.py' (optional)",
+              },
+              output_mode: {
+                type: "string",
+                enum: ["content", "files_with_matches", "count"],
+                description: "Output format (optional)",
+              },
+              context_before: {
+                type: "integer",
+                description: "Lines of context before match (optional)",
+              },
+              context_after: {
+                type: "integer",
+                description: "Lines of context after match (optional)",
+              },
+            },
+            required: ["pattern"],
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "list_dir",
+          description:
+            "List immediate files and subdirectories of a directory.",
+          parameters: {
+            type: "object",
+            properties: {
+              path: { type: "string", description: "Directory path" },
+            },
+            required: ["path"],
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "glob_search",
+          description: "Fast file pattern matching using glob patterns.",
+          parameters: {
+            type: "object",
+            properties: {
+              pattern: {
+                type: "string",
+                description: "Glob pattern, e.g. '**/*.py'",
+              },
+              path: {
+                type: "string",
+                description:
+                  "Directory to search in (optional, defaults to workspace)",
+              },
+            },
+            required: ["pattern"],
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "edit_file",
+          description:
+            "Edit a file by replacing an exact string match. PREFERRED over write_file for modifications. Provide the exact old_string to find and the new_string to replace it with. Preserves all content outside the match.",
+          parameters: {
+            type: "object",
+            properties: {
+              path: { type: "string", description: "File path to edit" },
+              old_string: {
+                type: "string",
+                description: "Exact string to find and replace",
+              },
+              new_string: { type: "string", description: "Replacement string" },
+              replaceAll: {
+                type: "boolean",
+                description: "Replace all occurrences (default: false)",
+              },
+            },
+            required: ["path", "old_string", "new_string"],
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "delete_file",
+          description: "Delete a file in the workspace.",
+          parameters: {
+            type: "object",
+            properties: {
+              path: { type: "string", description: "File path to delete" },
+            },
+            required: ["path"],
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "run_terminal_cmd",
+          description:
+            "Run a shell command in the workspace and return output. Use sparingly for build/test/git operations.",
+          parameters: {
+            type: "object",
+            properties: {
+              command: {
+                type: "string",
+                description: "Shell command to execute",
+              },
+              working_directory: {
+                type: "string",
+                description: "Working directory (optional)",
+              },
+            },
+            required: ["command"],
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "web_fetch",
+          description: "Fetch a URL and return the page content.",
+          parameters: {
+            type: "object",
+            properties: {
+              url: { type: "string", description: "URL to fetch" },
+            },
+            required: ["url"],
+          },
+        },
+      },
     ];
     var out = [];
     for (var i = 0; i < defs.length; i++) {
       var cfg = CHAT_TOOL_MAP[defs[i].function.name];
       if (!enumT || (cfg && enumT[cfg.tool] != null)) out.push(defs[i]);
     }
-    if (enumT && enumT.CALL_MCP_TOOL != null) out = out.concat(mcpToolSchemas(mcpTools));
+    if (enumT && enumT.CALL_MCP_TOOL != null)
+      out = out.concat(mcpToolSchemas(mcpTools));
     return out;
   }
   // OpenAI args -> ClientSideToolV2Call.params oneof 成员 partial(JSON 形态, 后续经 partialFor 包装)
@@ -808,8 +1426,73 @@
     return p2;
   }
   function serializeToolResult(msg) {
-    try { if (msg && msg.toJson) return JSON.stringify(msg.toJson()); } catch (e) { /* fallthrough */ }
-    try { return JSON.stringify(msg); } catch (e2) { return String(msg); }
+    try {
+      if (msg && msg.toJson) return JSON.stringify(msg.toJson());
+    } catch (e) {
+      /* fallthrough */
+    }
+    try {
+      return JSON.stringify(msg);
+    } catch (e2) {
+      return String(msg);
+    }
+  }
+  // --- edit_file: local search/replace via require('fs') ---
+  var _editFs = null;
+  function getEditFs() {
+    if (_editFs) return _editFs;
+    try {
+      _editFs = require("fs");
+      return _editFs;
+    } catch (e1) {}
+    try {
+      _editFs = globalThis.require && globalThis.require("fs");
+      return _editFs;
+    } catch (e2) {}
+    try {
+      _editFs =
+        process.mainModule &&
+        process.mainModule.require &&
+        process.mainModule.require("fs");
+      return _editFs;
+    } catch (e3) {}
+    return null;
+  }
+  function localEditFile(args) {
+    var path = args && args.path;
+    var oldStr = args && args.old_string;
+    var newStr = args && args.new_string;
+    var replaceAll = args && args.replaceAll;
+    if (!path) return { error: "edit_file: path is required" };
+    if (oldStr === undefined || oldStr === null)
+      return { error: "edit_file: old_string is required" };
+    var fs = getEditFs();
+    if (!fs)
+      return {
+        error:
+          "edit_file: filesystem not available (requires extension host context)",
+      };
+    try {
+      var content = fs.readFileSync(path, "utf8");
+      if (content.indexOf(oldStr) === -1)
+        return {
+          error:
+            "edit_file: old_string not found in " +
+            path +
+            ". Make sure old_string matches exactly including whitespace and indentation.",
+        };
+      var newContent = replaceAll
+        ? content.split(oldStr).join(newStr)
+        : content.replace(oldStr, newStr);
+      if (newContent === content)
+        return { error: "edit_file: replacement produced no change" };
+      fs.writeFileSync(path, newContent, "utf8");
+      log("edit_file done", path, replaceAll ? "(all)" : "(first)");
+      return { content: newContent, message: "File edited successfully" };
+    } catch (e) {
+      err("edit_file failed:", e && e.message);
+      return { error: "edit_file: " + ((e && e.message) || "unknown error") };
+    }
   }
   function execResultBag(msg) {
     var o = {};
@@ -819,11 +1502,14 @@
         var j = msg.toJson();
         if (j && typeof j === "object") o = j;
       }
-    } catch (eJ) { /* fallthrough */ }
+    } catch (eJ) {
+      /* fallthrough */
+    }
     if (msg.content != null && o.content == null) o.content = msg.content;
     if (msg.message != null && o.message == null) o.message = msg.message;
     if (msg.path != null && o.path == null) o.path = msg.path;
-    if (msg.afterFullFileContent != null && o.afterFullFileContent == null) o.afterFullFileContent = msg.afterFullFileContent;
+    if (msg.afterFullFileContent != null && o.afterFullFileContent == null)
+      o.afterFullFileContent = msg.afterFullFileContent;
     if (msg.result && msg.result.case && msg.result.value) {
       var inner = execResultBag(msg.result.value);
       for (var ik in inner) if (o[ik] == null) o[ik] = inner[ik];
@@ -844,33 +1530,60 @@
     var ResultT = resF.T;
     var src = execResultBag(resultMsg);
     var path = (argsObj && argsObj.path) || src.path || "";
-    var fileText = (argsObj && (argsObj.content != null ? argsObj.content : argsObj.fileText)) || src.content || "";
+    var fileText =
+      (argsObj &&
+        (argsObj.content == null ? argsObj.fileText : argsObj.content)) ||
+      src.content ||
+      "";
     try {
       var successF = findFieldDeep(ResultT, "success");
       if (successF && successF.T) {
         var suc = {};
         copyIfField(successF.T, suc, "path", path);
         copyIfField(successF.T, suc, "afterFullFileContent", fileText);
-        if (src.content != null && src.content !== "") copyIfField(successF.T, suc, "content", src.content);
-        copyIfField(successF.T, suc, "message", src.message || (!resultMsg ? "timed out" : undefined));
+        if (src.content != null && src.content !== "")
+          copyIfField(successF.T, suc, "content", src.content);
+        copyIfField(
+          successF.T,
+          suc,
+          "message",
+          src.message || (resultMsg ? undefined : "timed out"),
+        );
         var rp = {};
         setField(rp, successF, new successF.T(suc));
         return new ResultT(rp);
       }
       var flat = {};
       copyIfField(ResultT, flat, "content", src.content);
-      copyIfField(ResultT, flat, "message", src.message || (!resultMsg ? "timed out" : undefined));
+      copyIfField(
+        ResultT,
+        flat,
+        "message",
+        src.message || (resultMsg ? undefined : "timed out"),
+      );
       copyIfField(ResultT, flat, "path", path);
       return new ResultT(flat);
     } catch (eSyn) {
       err("ui result synthesize failed:", eSyn && eSyn.message);
-      try { return new ResultT({}); } catch (eEmpty) { return null; }
+      try {
+        return new ResultT({});
+      } catch (eEmpty) {
+        return null;
+      }
     }
   }
   // 构造 toolCallStarted/Completed 更新消息(全类型内省, 不依赖压缩变量名)
   // ap: {interField, interType, outerType}; field: Started/Completed 字段描述符
   // asCompleted: 只在 Completed 上填 UI result; Started 不能带 result
-  function buildAgentToolUpdate(ap, field, callId, resolved, argsObj, resultMsg, asCompleted) {
+  function buildAgentToolUpdate(
+    ap,
+    field,
+    callId,
+    resolved,
+    argsObj,
+    resultMsg,
+    asCompleted,
+  ) {
     try {
       if (!field || !field.T) return null;
       var entry = resolved && resolved.entry;
@@ -900,7 +1613,12 @@
         }
       }
       var callPartial = {};
-      if (argsF) setField(callPartial, argsF, argsT ? new argsT(argsPartial) : argsPartial);
+      if (argsF)
+        setField(
+          callPartial,
+          argsF,
+          argsT ? new argsT(argsPartial) : argsPartial,
+        );
       if (asCompleted) {
         var resF = findFieldDeep(CallT, "result");
         var uiRes = synthesizeUiResult(CallT, argsObj, resultMsg);
@@ -915,7 +1633,10 @@
       var outer = {};
       setField(outer, ap.interField, new ap.interType(interPartial));
       return new ap.outerType(outer);
-    } catch (e) { err("toolCall update failed:", e && e.message); return null; }
+    } catch (e) {
+      err("toolCall update failed:", e && e.message);
+      return null;
+    }
   }
   // 构造 execServerMessage — 真正驱动客户端执行工具的指令通道(协议核心):
   // 客户端 exec 编排器只处理 execServerMessage(@26211965 源码实证),
@@ -950,13 +1671,17 @@
       var outer = {};
       setField(outer, fExec, new ExecT(execPartial));
       return new RespT(outer);
-    } catch (e) { err("execServer build failed:", e && e.message); return null; }
+    } catch (e) {
+      err("execServer build failed:", e && e.message);
+      return null;
+    }
   }
   function agentBuildMessages(plan) {
     var out = [];
     if (plan.system) out.push({ role: "system", content: plan.system });
-    var hist = plan.convId ? (agentHistory.get(plan.convId) || []) : [];
-    for (var i = 0; i < hist.length; i++) out.push({ role: hist[i].role, content: hist[i].content });
+    var hist = plan.convId ? agentHistory.get(plan.convId) || [] : [];
+    for (var i = 0; i < hist.length; i++)
+      out.push({ role: hist[i].role, content: hist[i].content });
     out.push({ role: "user", content: plan.text || "(empty message)" });
     return out;
   }
@@ -967,7 +1692,10 @@
     h.push({ role: "assistant", content: assistantText });
     while (h.length > 40) h.shift();
     // 新会话且已达上限: 淘汰最旧会话(Map 保持插入序)
-    if (!agentHistory.has(convId) && agentHistory.size >= MAX_AGENT_CONVERSATIONS) {
+    if (
+      !agentHistory.has(convId) &&
+      agentHistory.size >= MAX_AGENT_CONVERSATIONS
+    ) {
       var oldest = agentHistory.keys().next();
       if (!oldest.done) agentHistory.delete(oldest.value);
     }
@@ -978,9 +1706,22 @@
   var _cfgFetch = null;
   var _cfgFetchedAt = 0;
   var LIVE_CFG_KEYS = [
-    "enabled", "baseUrl", "apiKey", "defaultModel", "modelMapping", "extraHeaders",
-    "temperature", "maxTokens", "sendReasoningAsText", "blockUsageGate", "agentTools",
-    "agentSystemPrompt", "agentToolTimeoutMs", "agentMaxToolRounds", "agentContext", "debugDump"
+    "enabled",
+    "baseUrl",
+    "apiKey",
+    "defaultModel",
+    "modelMapping",
+    "extraHeaders",
+    "temperature",
+    "maxTokens",
+    "sendReasoningAsText",
+    "blockUsageGate",
+    "agentTools",
+    "agentSystemPrompt",
+    "agentToolTimeoutMs",
+    "agentMaxToolRounds",
+    "agentContext",
+    "debugDump",
   ];
   function applyLiveCfg(next) {
     if (!next || typeof next !== "object") return;
@@ -994,7 +1735,10 @@
       g.__CURSOR_CM__.config.baseUrl = CFG.baseUrl;
       g.__CURSOR_CM__.config.defaultModel = CFG.defaultModel;
     }
-    if (String(prevModel) !== String(CFG.defaultModel) || String(prevUrl) !== String(CFG.baseUrl)) {
+    if (
+      String(prevModel) !== String(CFG.defaultModel) ||
+      String(prevUrl) !== String(CFG.baseUrl)
+    ) {
       log("live config →", CFG.baseUrl, "| model:", CFG.defaultModel);
     }
   }
@@ -1003,24 +1747,40 @@
     var now = Date.now();
     if (_cfgFetch && now - _cfgFetchedAt < 250) return _cfgFetch;
     _cfgFetchedAt = now;
-    _cfgFetch = fetch("http://127.0.0.1:" + _logPort + "/config", { method: "GET" })
-      .then(function (r) { return r && r.ok ? r.json() : null; })
-      .then(function (next) { applyLiveCfg(next); })
-      .catch(function () { /* Gateway down: keep last CFG */ });
+    _cfgFetch = fetch("http://127.0.0.1:" + _logPort + "/config", {
+      method: "GET",
+    })
+      .then((r) => (r && r.ok ? r.json() : null))
+      .then((next) => {
+        applyLiveCfg(next);
+      })
+      .catch(() => {
+        /* Gateway down: keep last CFG */
+      });
     return _cfgFetch;
   }
 
   function callUpstream(messages, model, signal, tools) {
-    return refreshCfg().then(function () {
+    return refreshCfg().then(() => {
       var url = String(CFG.baseUrl).replace(/\/+$/, "") + "/chat/completions";
       var body = { model: model, messages: messages, stream: true };
       if (tools && tools.length) body.tools = tools;
       if (CFG.temperature != null) body.temperature = CFG.temperature;
-      if (CFG.maxTokens != null) body.max_tokens = CFG.maxTokens;
-      var headers = { "content-type": "application/json", "authorization": "Bearer " + CFG.apiKey };
+      body.max_tokens = CFG.maxTokens || 16384; // default 16384 for reasoning models (DeepSeek etc.)
+      var headers = {
+        "content-type": "application/json",
+        authorization: "Bearer " + CFG.apiKey,
+      };
       var extra = CFG.extraHeaders || {};
-      Object.keys(extra).forEach(function (k) { headers[k] = extra[k]; });
-      return fetch(url, { method: "POST", signal: signal, headers: headers, body: JSON.stringify(body) });
+      Object.keys(extra).forEach((k) => {
+        headers[k] = extra[k];
+      });
+      return fetch(url, {
+        method: "POST",
+        signal: signal,
+        headers: headers,
+        body: JSON.stringify(body),
+      });
     });
   }
 
@@ -1031,16 +1791,26 @@
     var buf = "";
     var done = false;
     var queued = []; // buffer for extra events when one SSE delta has both reasoning+content
+    var _finishReason = null; // track finish_reason from SSE (e.g. 'length' = truncated by max_tokens)
     function parseDelta(payload) {
       var j = null;
-      try { j = JSON.parse(payload); } catch (e) { return null; }
-      var delta = j.choices && j.choices[0] && j.choices[0].delta;
+      try {
+        j = JSON.parse(payload);
+      } catch (e) {
+        return null;
+      }
+      var choice = j.choices && j.choices[0];
+      if (choice && choice.finish_reason) _finishReason = choice.finish_reason;
+      var delta = choice && choice.delta;
       if (!delta) return null;
       var events = [];
       var reasoning = delta.reasoning_content || delta.reasoning;
-      if (reasoning) events.push({ type: "reasoning", text: String(reasoning) });
-      if (delta.tool_calls && delta.tool_calls.length) events.push({ type: "toolCall", toolCalls: delta.tool_calls });
-      if (delta.content) events.push({ type: "text", text: String(delta.content) });
+      if (reasoning)
+        events.push({ type: "reasoning", text: String(reasoning) });
+      if (delta.tool_calls && delta.tool_calls.length)
+        events.push({ type: "toolCall", toolCalls: delta.tool_calls });
+      if (delta.content)
+        events.push({ type: "text", text: String(delta.content) });
       if (!events.length) return null;
       if (events.length === 1) return events[0];
       // Multiple fields in one delta: return first, queue the rest
@@ -1056,15 +1826,19 @@
         buf = buf.slice(idx + 1);
         if (line.indexOf("data:") !== 0) continue;
         var payload = line.slice(5).trim();
-        if (payload === "[DONE]") { done = true; return { value: undefined, done: true }; }
+        if (payload === "[DONE]") {
+          done = true;
+          return { value: undefined, done: true };
+        }
         var ev = parseDelta(payload);
         if (ev) return { value: ev, done: false };
       }
     }
     return {
+      finishReason: () => _finishReason,
       // True if unread buf already has a tool_calls SSE line (same TCP/HTTP chunk).
       // Inline check (no parseDelta) to avoid side-effects on the queued buffer.
-      bufHasToolCall: function () {
+      bufHasToolCall: () => {
         var rest = buf;
         while (true) {
           var idx = rest.indexOf("\n");
@@ -1078,15 +1852,16 @@
             var j = JSON.parse(payload);
             var d = j.choices && j.choices[0] && j.choices[0].delta;
             if (d && d.tool_calls && d.tool_calls.length) return true;
-          } catch (e) { /* noop */ }
+          } catch (e) {
+            /* noop */
+          }
         }
       },
       next: function () {
         if (done) return Promise.resolve({ value: undefined, done: true });
         var r = parseLine();
         if (r) return Promise.resolve(r);
-        var self = this;
-        return reader.read().then(function (chunk) {
+        return reader.read().then((chunk) => {
           if (chunk.done) {
             var last = parseLine();
             return last || { value: undefined, done: true };
@@ -1094,25 +1869,41 @@
           buf += decoder.decode(chunk.value, { stream: true });
           var r2 = parseLine();
           if (r2) return r2;
-          return self.next();
+          return this.next();
         });
       },
-      "return": function () {
-        try { reader.cancel(); } catch (e) { /* noop */ }
+      return: () => {
+        try {
+          reader.cancel();
+        } catch (e) {
+          /* noop */
+        }
         return Promise.resolve({ value: undefined, done: true });
-      }
+      },
     };
   }
 
   /* ============================================================
    * 核心：处理被拦截的流式请求
    * ============================================================ */
-  function handleStream(service, method, signal, timeoutMs, header, input, contextValues) {
+  function handleStream(
+    service,
+    method,
+    signal,
+    timeoutMs,
+    header,
+    input,
+    contextValues,
+  ) {
     var RespT = method.O;
     var key = service.typeName + "/" + method.name;
     var isCmdK = service.typeName === "aiserver.v1.CmdKService";
-    var isAgentRun = service.typeName === "agent.v1.AgentService" && method.name === "Run";
-    var isBidi = method.kind === 3 /* MethodKind.BiDiStreaming */ || (/WithTools$/.test(method.name) && !/SSE$|Poll$|Idempotent$/.test(method.name));
+    var isAgentRun =
+      service.typeName === "agent.v1.AgentService" && method.name === "Run";
+    var isBidi =
+      method.kind === 3 /* MethodKind.BiDiStreaming */ ||
+      (/WithTools$/.test(method.name) &&
+        !/SSE$|Poll$|Idempotent$/.test(method.name));
 
     // 收集 input（ServerStreaming 单条；BiDi 拿到首个有效请求后 50ms 放行 / agent 上限 1024 条供工具结果回传）
     var collectCap = isAgentRun ? 1024 : 64;
@@ -1123,14 +1914,17 @@
     function settleCollect() {
       if (collectSettled) return;
       collectSettled = true;
-      if (bidiSettleTimer) { clearTimeout(bidiSettleTimer); bidiSettleTimer = null; }
+      if (bidiSettleTimer) {
+        clearTimeout(bidiSettleTimer);
+        bidiSettleTimer = null;
+      }
       if (collectResolve) collectResolve(collected.slice());
     }
     function scheduleBidiSettle() {
       if (collectSettled || bidiSettleTimer) return;
       bidiSettleTimer = setTimeout(settleCollect, 50);
     }
-    var collectPromise = (async function () {
+    var collectPromise = (async () => {
       try {
         for await (var m of input) {
           collected.push(m);
@@ -1139,14 +1933,28 @@
             try {
               stats.agentInLog = stats.agentInLog || [];
               if (stats.agentInLog.length < 300) {
-                stats.agentInLog.push(String(m && m.message && m.message.case || "?") +
-                  (m && m.message && m.message.case === "execClientMessage"
-                    ? "{id:" + (m.message.value.id != null ? String(m.message.value.id) : "-") +
-                      ",execId:" + (m.message.value.execId || "-") +
-                      ",inner:" + String(m.message.value.message && m.message.value.message.case || "-") + "}"
-                    : ""));
+                stats.agentInLog.push(
+                  String((m && m.message && m.message.case) || "?") +
+                    (m && m.message && m.message.case === "execClientMessage"
+                      ? "{id:" +
+                        (m.message.value.id == null
+                          ? "-"
+                          : String(m.message.value.id)) +
+                        ",execId:" +
+                        (m.message.value.execId || "-") +
+                        ",inner:" +
+                        String(
+                          (m.message.value.message &&
+                            m.message.value.message.case) ||
+                            "-",
+                        ) +
+                        "}"
+                      : ""),
+                );
               }
-            } catch (eLog) { /* noop */ }
+            } catch (eLog) {
+              /* noop */
+            }
           }
           // agent: 一旦收到 runRequest 立即放行(客户端可能先发心跳/prewarm, runRequest 携带完整请求)
           if (isAgentRun && m && m.message && m.message.case === "runRequest") {
@@ -1163,67 +1971,111 @@
       settleCollect();
       return collected;
     })();
-    var collectGate = new Promise(function (resolve) { collectResolve = resolve; });
+    var collectGate = new Promise((resolve) => {
+      collectResolve = resolve;
+    });
     function withWindow(p, ms) {
-      return new Promise(function (resolve) {
-        var t = setTimeout(function () { resolve(collected.slice()); }, ms);
-        p.then(function (v) { clearTimeout(t); resolve(v); }, function () { clearTimeout(t); resolve(collected.slice()); });
+      return new Promise((resolve) => {
+        var t = setTimeout(() => {
+          resolve(collected.slice());
+        }, ms);
+        p.then(
+          (v) => {
+            clearTimeout(t);
+            resolve(v);
+          },
+          () => {
+            clearTimeout(t);
+            resolve(collected.slice());
+          },
+        );
       });
     }
     // agent: 等待 runRequest 出现(立即放行)或 8s 兜底; 其他 BiDi: 首包后 50ms / 200ms 封顶
     var collectPhase = isAgentRun
       ? withWindow(Promise.race([collectGate, collectPromise]), 8000)
-      : (isBidi ? withWindow(Promise.race([collectGate, collectPromise]), 200) : collectPromise);
+      : isBidi
+        ? withWindow(Promise.race([collectGate, collectPromise]), 200)
+        : collectPromise;
 
-    var planPromise = collectPhase.then(function (list) {
-      return refreshCfg().then(function () { return list; });
-    }).then(function (list) {
-      var req, meta, out;
-      if (isAgentRun) {
-        var plan = agentRunToPlan(list);
-        if (!plan) { throw new Error(TAG + " agent run: no runRequest in stream"); }
-        try { plan.system = buildAgentSystemPrompt(plan); } catch (eSys) { plan.system = ""; }
-        try { stats.agentDebug = { actionCase: plan.actionCase, textLen: plan.text.length, msgCount: list.length, convId: !!plan.convId, sysLen: plan.system.length, rcFrom: plan.rcFrom }; } catch (eS) { /* noop */ }
-        req = plan.modelReq;
-        meta = { agentPlan: plan };
-        out = agentBuildMessages(plan);
-      } else if (isCmdK) {
-        var r1 = cmdkToMessages(list[0] || {});
-        req = list[0] || {};
-        meta = { sel: r1.sel };
-        out = r1.messages;
-      } else if (isBidi) {
-        req = bidiToRequest(list);
-        meta = { chatReq: req };
-        out = unifiedToMessages(req);
-      } else {
-        // ServerStreaming: 单条请求，可能被 clientChunk/streamUnifiedChatRequest 包装
-        req = unwrapChatRequest(list[0], 0) || list[0] || {};
-        meta = {};
-        out = unifiedToMessages(req);
-      }
-      var model = resolveModel(req);
-      log("intercept", key, "→", model, "| messages:", out.length, "| sel:", !!(meta && meta.sel));
-      return { messages: out, model: model, meta: meta || {} };
-    });
+    var planPromise = collectPhase
+      .then((list) => refreshCfg().then(() => list))
+      .then((list) => {
+        var req, meta, out;
+        if (isAgentRun) {
+          var plan = agentRunToPlan(list);
+          if (!plan) {
+            throw new Error(TAG + " agent run: no runRequest in stream");
+          }
+          try {
+            plan.system = buildAgentSystemPrompt(plan);
+          } catch (eSys) {
+            plan.system = "";
+          }
+          try {
+            stats.agentDebug = {
+              actionCase: plan.actionCase,
+              textLen: plan.text.length,
+              msgCount: list.length,
+              convId: !!plan.convId,
+              sysLen: plan.system.length,
+              rcFrom: plan.rcFrom,
+            };
+          } catch (eS) {
+            /* noop */
+          }
+          req = plan.modelReq;
+          meta = { agentPlan: plan };
+          out = agentBuildMessages(plan);
+        } else if (isCmdK) {
+          var r1 = cmdkToMessages(list[0] || {});
+          req = list[0] || {};
+          meta = { sel: r1.sel };
+          out = r1.messages;
+        } else if (isBidi) {
+          req = bidiToRequest(list);
+          meta = { chatReq: req };
+          out = unifiedToMessages(req);
+        } else {
+          // ServerStreaming: 单条请求，可能被 clientChunk/streamUnifiedChatRequest 包装
+          req = unwrapChatRequest(list[0], 0) || list[0] || {};
+          meta = {};
+          out = unifiedToMessages(req);
+        }
+        var model = resolveModel(req);
+        log(
+          "intercept",
+          key,
+          "→",
+          model,
+          "| messages:",
+          out.length,
+          "| sel:",
+          !!(meta && meta.sel),
+        );
+        return { messages: out, model: model, meta: meta || {} };
+      });
 
     // 响应发射器
     var emitter = resolveEmitter(RespT, 0);
     // Chat 工具通道: BiDi 且响应链上存在 clientSideToolV2Call 时启用
-    var chatToolsPlan = (!isCmdK && !isAgentRun && isBidi && emitter && AGENT_TOOLS_ON)
-      ? resolveChatToolPath(emitter, RespT) : null;
+    var chatToolsPlan =
+      !isCmdK && !isAgentRun && isBidi && emitter && AGENT_TOOLS_ON
+        ? resolveChatToolPath(emitter, RespT)
+        : null;
     var cmdkPlan = null;
     if (isCmdK) {
       // CmdK: realResponse → editStart/editStream/editEnd | chat
       var fReal = findFieldDeep(RespT, "realResponse");
-      var InnerT = (fReal && fReal.kind === "message" && fReal.T) ? fReal.T : RespT;
+      var InnerT =
+        fReal && fReal.kind === "message" && fReal.T ? fReal.T : RespT;
       cmdkPlan = {
         realField: fReal || null,
         startField: findFieldDeep(InnerT, "editStart"),
         streamField: findFieldDeep(InnerT, "editStream"),
         endField: findFieldDeep(InnerT, "editEnd"),
         chatField: findFieldDeep(InnerT, "chat"),
-        innerType: InnerT
+        innerType: InnerT,
       };
     }
 
@@ -1239,7 +2091,10 @@
           return new RespT(p2);
         }
         return new RespT(p);
-      } catch (e) { err("cmdkMsg failed:", e && e.message); return null; }
+      } catch (e) {
+        err("cmdkMsg failed:", e && e.message);
+        return null;
+      }
     }
 
     /* ---------- agent.v1 循环生成器: 多轮上游调用 + 工具往返 ---------- */
@@ -1247,20 +2102,26 @@
       var fallback = null;
       for (var i = from; i < collected.length; i++) {
         var m = collected[i];
-        if (!m || !m.message || m.message.case !== "execClientMessage") continue;
+        if (!m || !m.message || m.message.case !== "execClientMessage")
+          continue;
         var ex = m.message.value;
         if (!ex) continue;
-        var mid = (ex.id != null) ? String(ex.id) : "";
+        var mid = ex.id == null ? "" : String(ex.id);
         var eid = ex.execId || "";
-        if (mid === callId || eid === callId) return { ex: ex, idx: i, matched: "id" };
+        if (mid === callId || eid === callId)
+          return { ex: ex, idx: i, matched: "id" };
         if (!fallback) fallback = { ex: ex, idx: i, matched: "fifo" }; // FIFO 兜底: 客户端顺序回传的第一条未消费结果
       }
       return fallback;
     }
     async function* agentOutputLoop(info) {
       var fInter = findFieldDeep(RespT, "interactionUpdate");
-      var InteractionT = (fInter && fInter.kind === "message" && fInter.T) ? fInter.T : null;
-      if (!InteractionT) throw new Error(TAG + " agent: no interactionUpdate on " + RespT.typeName);
+      var InteractionT =
+        fInter && fInter.kind === "message" && fInter.T ? fInter.T : null;
+      if (!InteractionT)
+        throw new Error(
+          TAG + " agent: no interactionUpdate on " + RespT.typeName,
+        );
       var ap = {
         interField: fInter,
         interType: InteractionT,
@@ -1270,10 +2131,12 @@
         textField: findFieldDeep(InteractionT, "textDelta"),
         turnEndedField: findFieldDeep(InteractionT, "turnEnded"),
         toolStartedField: findFieldDeep(InteractionT, "toolCallStarted"),
-        toolCompletedField: findFieldDeep(InteractionT, "toolCallCompleted")
+        toolCompletedField: findFieldDeep(InteractionT, "toolCallCompleted"),
       };
-      if (!ap.textField) throw new Error(TAG + " agent: no textDelta on " + InteractionT.typeName);
-      var self = this;
+      if (!ap.textField)
+        throw new Error(
+          TAG + " agent: no textDelta on " + InteractionT.typeName,
+        );
       function mk(field, init) {
         try {
           var interPartial = {};
@@ -1281,10 +2144,15 @@
           var outer = {};
           setField(outer, ap.interField, new ap.interType(interPartial));
           return new RespT(outer);
-        } catch (e) { err("agentUpdate failed:", e && e.message); return null; }
+        } catch (e) {
+          err("agentUpdate failed:", e && e.message);
+          return null;
+        }
       }
       function delayMs(ms) {
-        return new Promise(function (rs) { setTimeout(rs, ms); });
+        return new Promise((rs) => {
+          setTimeout(rs, ms);
+        });
       }
       function thinkMsg(text) {
         if (!text || !ap.thinkingField) return null;
@@ -1293,11 +2161,16 @@
       function toolProgressText(name, args) {
         var a = args || {};
         if (name === "write_file") return "Editing " + (a.path || "file") + "…";
+        if (name === "edit_file") return "Editing " + (a.path || "file") + "…";
         if (name === "read_file") return "Reading " + (a.path || "file") + "…";
-        if (name === "delete_file") return "Deleting " + (a.path || "file") + "…";
-        if (name === "list_dir") return "Listing " + (a.path || "directory") + "…";
-        if (name === "grep_search") return "Searching " + (a.pattern || "") + "…";
-        if (name === "run_terminal_cmd") return "Running " + String(a.command || "command").slice(0, 80) + "…";
+        if (name === "delete_file")
+          return "Deleting " + (a.path || "file") + "…";
+        if (name === "list_dir")
+          return "Listing " + (a.path || "directory") + "…";
+        if (name === "grep_search")
+          return "Searching " + (a.pattern || "") + "…";
+        if (name === "run_terminal_cmd")
+          return "Running " + String(a.command || "command").slice(0, 80) + "…";
         if (name === "web_fetch") return "Fetching " + (a.url || "url") + "…";
         if (name === "read_lints") return "Reading lints…";
         return "Running " + name + "…";
@@ -1305,8 +2178,19 @@
       // Keep the Agent ConnectRPC stream alive: Cursor drops it after ~30s of silence.
       // Race the work Promise — a 200ms poll-then-check (1.6.5) added 200ms per SSE token.
       async function* heartbeatWhile(work, waitHint) {
-        var settled = false, value, error;
-        var workP = Promise.resolve(work).then(function (v) { value = v; settled = true; }, function (e) { error = e; settled = true; });
+        var settled = false,
+          value,
+          error;
+        var workP = Promise.resolve(work).then(
+          (v) => {
+            value = v;
+            settled = true;
+          },
+          (e) => {
+            error = e;
+            settled = true;
+          },
+        );
         await Promise.resolve();
         if (settled) {
           if (error) throw error;
@@ -1349,15 +2233,25 @@
         return msgs;
       }
       // 心跳预发: 防客户端等待首包超时
-      if (ap.heartbeatField) { var hb0 = mk(ap.heartbeatField, {}); if (hb0) yield hb0; }
+      if (ap.heartbeatField) {
+        var hb0 = mk(ap.heartbeatField, {});
+        if (hb0) yield hb0;
+      }
 
       var messages = info.messages.slice();
-      var toolsOn = AGENT_TOOLS_ON && ap.toolStartedField && ap.toolCompletedField;
+      var toolsOn =
+        AGENT_TOOLS_ON && ap.toolStartedField && ap.toolCompletedField;
       var mcpTools = [];
       try {
-        mcpTools = (info.meta && info.meta.agentPlan && info.meta.agentPlan.requestContext
-          && info.meta.agentPlan.requestContext.tools) || [];
-      } catch (eMcp) { mcpTools = []; }
+        mcpTools =
+          (info.meta &&
+            info.meta.agentPlan &&
+            info.meta.agentPlan.requestContext &&
+            info.meta.agentPlan.requestContext.tools) ||
+          [];
+      } catch (eMcp) {
+        mcpTools = [];
+      }
       var tools = toolsOn ? agentToolSchemas(mcpTools) : null;
       var finalText = "";
       var watermark = collected.length; // 工具结果只从 watermark 之后匹配
@@ -1366,19 +2260,34 @@
       for (var round = 0; ; round++) {
         var res;
         try {
-          res = yield* heartbeatWhile(callUpstream(messages, info.model, signal, tools), "Waiting for model…");
+          res = yield* heartbeatWhile(
+            callUpstream(messages, info.model, signal, tools),
+            "Waiting for model…",
+          );
         } catch (e) {
           if (e && e.name === "AbortError") throw e;
           err("upstream fetch failed:", e && e.message);
-          var failMsgs = endTurnWith(TAG + " upstream fetch failed: " + (e && e.message));
+          var failMsgs = endTurnWith(
+            TAG + " upstream fetch failed: " + (e && e.message),
+          );
           for (var fi = 0; fi < failMsgs.length; fi++) yield failMsgs[fi];
           return;
         }
         if (!res.ok) {
           var errText2 = "";
-          try { errText2 = await res.text(); } catch (eT) { /* noop */ }
+          try {
+            errText2 = await res.text();
+          } catch (eT) {
+            /* noop */
+          }
           err("upstream error", res.status, errText2 && errText2.slice(0, 300));
-          var failMsgs2 = endTurnWith(TAG + " upstream API " + res.status + ": " + String(errText2).slice(0, 300));
+          var failMsgs2 = endTurnWith(
+            TAG +
+              " upstream API " +
+              res.status +
+              ": " +
+              String(errText2).slice(0, 300),
+          );
           for (var fj = 0; fj < failMsgs2.length; fj++) yield failMsgs2[fj];
           return;
         }
@@ -1397,11 +2306,14 @@
         try {
           while (true) {
             var r;
-            try { r = yield* heartbeatWhile(it.next()); }
-            catch (eR) {
+            try {
+              r = yield* heartbeatWhile(it.next());
+            } catch (eR) {
               if (eR && eR.name === "AbortError") throw eR;
               err("stream read failed:", eR && eR.message);
-              var failMsgs3 = endTurnWith(TAG + " stream read failed: " + (eR && eR.message));
+              var failMsgs3 = endTurnWith(
+                TAG + " stream read failed: " + (eR && eR.message),
+              );
               for (var fk = 0; fk < failMsgs3.length; fk++) yield failMsgs3[fk];
               return;
             }
@@ -1418,6 +2330,16 @@
                 }
                 heldText = "";
               }
+              // Warn if upstream truncated the response (finish_reason: length)
+              var fr = it.finishReason && it.finishReason();
+              if (fr === "length" && !toolsOn) {
+                var truncWarn =
+                  "\n\n[Warning: Response was truncated by the upstream API (finish_reason: length). " +
+                  "Try increasing maxTokens in your provider config, or simplify the request.]";
+                finalText += truncWarn;
+                var tmTrunc = mk(ap.textField, { text: truncWarn });
+                if (tmTrunc) yield tmTrunc;
+              }
               break;
             }
             var part = r.value;
@@ -1433,8 +2355,9 @@
               var tcs = part.toolCalls || [];
               for (var ti = 0; ti < tcs.length; ti++) {
                 var tc = tcs[ti] || {};
-                var tidx = (tc.index != null) ? tc.index : 0;
-                if (!pending[tidx]) pending[tidx] = { id: "", name: "", args: "" };
+                var tidx = tc.index == null ? 0 : tc.index;
+                if (!pending[tidx])
+                  pending[tidx] = { id: "", name: "", args: "" };
                 if (tc.id) pending[tidx].id = String(tc.id);
                 var fn = tc.function || {};
                 if (fn.name) pending[tidx].name = String(fn.name);
@@ -1445,7 +2368,10 @@
             if (part.type === "text" && part.text) {
               accText += part.text;
               roundChunks.push(part.text);
-              var holdThink = toolsOn && (Object.keys(pending).length > 0 || (it.bufHasToolCall && it.bufHasToolCall()));
+              var holdThink =
+                toolsOn &&
+                (Object.keys(pending).length > 0 ||
+                  (it.bufHasToolCall && it.bufHasToolCall()));
               if (holdThink) {
                 var tmPrev = flushHeldThink();
                 if (tmPrev) yield tmPrev;
@@ -1465,16 +2391,23 @@
           }
         } finally {
           if (it && typeof it["return"] === "function") {
-            try { it["return"](); } catch (eCleanup2) { /* noop */ }
+            try {
+              it["return"]();
+            } catch (eCleanup2) {
+              /* noop */
+            }
           }
         }
 
-        var calls = Object.keys(pending).map(function (k) { return pending[k]; })
-          .filter(function (c) { return c.name && resolveAgentTool(c.name, mcpTools); });
+        var calls = Object.keys(pending)
+          .map((k) => pending[k])
+          .filter((c) => c.name && resolveAgentTool(c.name, mcpTools));
         // 工具轮次的计划正文进 thinking, 不进回复, 避免 "Let me write…" 叠在最终答案前面。
         if (calls.length && toolsOn) {
           if (!roundChunks.length) {
-            var tmP = thinkMsg("Using " + calls.map(function (c) { return c.name; }).join(", ") + "…");
+            var tmP = thinkMsg(
+              "Using " + calls.map((c) => c.name).join(", ") + "…",
+            );
             if (tmP) yield tmP;
           }
         } else if (!visibleSent) {
@@ -1486,31 +2419,91 @@
         }
         if (!calls.length || !toolsOn) break; // 纯文本回合 → 结束循环
 
-        log("agent round", round + 1, "| tool calls:", calls.length, "(" + calls.map(function (c) { return c.name; }).join(",") + ")");
+        log(
+          "agent round",
+          round + 1,
+          "| tool calls:",
+          calls.length,
+          "(" + calls.map((c) => c.name).join(",") + ")",
+        );
         // assistant tool_calls 消息(OpenAI 格式)
         messages.push({
           role: "assistant",
           content: accText || null,
-          tool_calls: calls.map(function (c) {
-            return { id: c.id || ("call_" + (++callSeq)), type: "function", function: { name: c.name, arguments: c.args || "{}" } };
-          })
+          tool_calls: calls.map((c) => ({
+            id: c.id || "call_" + ++callSeq,
+            type: "function",
+            function: { name: c.name, arguments: c.args || "{}" },
+          })),
         });
 
         for (var ci = 0; ci < calls.length; ci++) {
           var c2 = calls[ci];
-          if (!c2.id) c2.id = "call_" + (++callSeq);
+          if (!c2.id) c2.id = "call_" + ++callSeq;
           var argsObj = {};
-          try { argsObj = JSON.parse(c2.args || "{}"); } catch (eJ) { argsObj = {}; }
+          try {
+            argsObj = JSON.parse(c2.args || "{}");
+          } catch (eJ) {
+            argsObj = {};
+          }
           // 三段式协议: 1) toolCallStarted(UI 展示) 2) execServerMessage(真实执行指令)
           // 3) 等待 execClientMessage 结果 → toolCallCompleted 收尾
           var resolved = resolveAgentTool(c2.name, mcpTools);
           if (!resolved) continue;
+          // edit_file: execute locally (search/replace via fs), skip Cursor exec
+          if (c2.name === "edit_file") {
+            var prog0 = thinkMsg(toolProgressText(c2.name, argsObj));
+            if (prog0) yield prog0;
+            var stMsg0 = buildAgentToolUpdate(
+              ap,
+              ap.toolStartedField,
+              c2.id,
+              resolved,
+              argsObj,
+              null,
+              false,
+            );
+            if (stMsg0) yield stMsg0;
+            var editRes = localEditFile(argsObj);
+            var cpMsg0 = buildAgentToolUpdate(
+              ap,
+              ap.toolCompletedField,
+              c2.id,
+              resolved,
+              argsObj,
+              { message: { case: "writeResult", value: editRes } },
+              true,
+            );
+            if (cpMsg0) yield cpMsg0;
+            messages.push({
+              role: "tool",
+              tool_call_id: c2.id,
+              content: JSON.stringify(editRes).slice(0, 60000),
+            });
+            continue;
+          }
           var prog = thinkMsg(toolProgressText(c2.name, argsObj));
           if (prog) yield prog;
-          var stMsg = buildAgentToolUpdate(ap, ap.toolStartedField, c2.id, resolved, argsObj, null, false);
+          var stMsg = buildAgentToolUpdate(
+            ap,
+            ap.toolStartedField,
+            c2.id,
+            resolved,
+            argsObj,
+            null,
+            false,
+          );
           if (stMsg) yield stMsg;
-          var execMsg = buildExecServerUpdate(RespT, callSeq * 1000 + ci, c2.id, resolved, argsObj);
-          if (!execMsg) { log("no execServerMessage channel, skip exec"); }
+          var execMsg = buildExecServerUpdate(
+            RespT,
+            callSeq * 1000 + ci,
+            c2.id,
+            resolved,
+            argsObj,
+          );
+          if (!execMsg) {
+            log("no execServerMessage channel, skip exec");
+          }
           if (execMsg) yield execMsg;
           // 等待客户端回传 ExecClientMessage 结果(期间心跳保活)
           var resultMsg = null;
@@ -1520,10 +2513,15 @@
             var found = findExecResult(c2.id, watermark);
             if (found) {
               var exr = found.ex;
-              log("tool result", found.matched, "| id=" + (exr.id != null ? String(exr.id) : "-"),
-                "execId=" + (exr.execId || "-"), "case=" + ((exr.message && exr.message.case) || "-"));
+              log(
+                "tool result",
+                found.matched,
+                "| id=" + (exr.id == null ? "-" : String(exr.id)),
+                "execId=" + (exr.execId || "-"),
+                "case=" + ((exr.message && exr.message.case) || "-"),
+              );
               var g = exr.message;
-              resultMsg = (g && g.case && g.value) ? g.value : exr;
+              resultMsg = g && g.case && g.value ? g.value : exr;
               watermark = found.idx + 1; // 消费到该条(顺序推进)
               break;
             }
@@ -1533,15 +2531,29 @@
               var hbT = mk(ap.heartbeatField, {});
               if (hbT) yield hbT;
             }
-            await new Promise(function (rs) { setTimeout(rs, 20); });
+            await new Promise((rs) => {
+              setTimeout(rs, 20);
+            });
           }
           // Completed: UI 层 result(EditResult.success), 不是 exec WriteResult
-          var cpMsg = buildAgentToolUpdate(ap, ap.toolCompletedField, c2.id, resolved, argsObj, resultMsg, true);
+          var cpMsg = buildAgentToolUpdate(
+            ap,
+            ap.toolCompletedField,
+            c2.id,
+            resolved,
+            argsObj,
+            resultMsg,
+            true,
+          );
           if (cpMsg) yield cpMsg;
           var resultText = resultMsg
             ? serializeToolResult(resultMsg).slice(0, 60000)
             : "(tool execution timed out or was not executed by the client)";
-          messages.push({ role: "tool", tool_call_id: c2.id, content: resultText });
+          messages.push({
+            role: "tool",
+            tool_call_id: c2.id,
+            content: resultText,
+          });
         }
       }
 
@@ -1557,7 +2569,9 @@
       try {
         var apl = info.meta && info.meta.agentPlan;
         if (apl) agentRemember(apl.convId, apl.text, finalText);
-      } catch (eHist2) { /* noop */ }
+      } catch (eHist2) {
+        /* noop */
+      }
       log("done", key, "| agent final:", finalText.slice(0, 80));
     }
 
@@ -1575,7 +2589,8 @@
       }
       for (var i = 0; i < types.length; i++) {
         var f = findFieldDeep(types[i], "clientSideToolV2Call");
-        if (f && f.kind === "message" && f.T) return { types: types, ems: ems, at: i, callField: f };
+        if (f && f.kind === "message" && f.T)
+          return { types: types, ems: ems, at: i, callField: f };
       }
       return null;
     }
@@ -1588,16 +2603,27 @@
           p = setField({}, em.field, new em.field.T(p));
         }
         return new tp.types[0](p);
-      } catch (e) { err("chat toolCall build failed:", e && e.message); return null; }
+      } catch (e) {
+        err("chat toolCall build failed:", e && e.message);
+        return null;
+      }
     }
     // 请求流控制包解包: request oneof 沿 clientChunk/streamUnifiedChatRequest 深入, 命中 clientSideToolV2Result
     function unwrapChatToolResult(m) {
-      var cur = m, d = 0;
+      var cur = m,
+        d = 0;
       while (cur && d < 6) {
         var r = cur.request;
         if (r && r.case && r.value) {
           if (r.case === "clientSideToolV2Result") return r.value;
-          if (r.case === "clientChunk" || r.case === "streamUnifiedChatRequest") { cur = r.value; d++; continue; }
+          if (
+            r.case === "clientChunk" ||
+            r.case === "streamUnifiedChatRequest"
+          ) {
+            cur = r.value;
+            d++;
+            continue;
+          }
         }
         return null;
       }
@@ -1608,15 +2634,21 @@
       for (var i = from; i < collected.length; i++) {
         var res = unwrapChatToolResult(collected[i]);
         if (!res) continue;
-        if (String(res.toolCallId || "") === String(callId)) return { res: res, idx: i, matched: "id" };
+        if (String(res.toolCallId || "") === String(callId))
+          return { res: res, idx: i, matched: "id" };
         if (!fallback) fallback = { res: res, idx: i, matched: "fifo" }; // FIFO 兜底
       }
       return fallback;
     }
     function chatToolResultText(res) {
       try {
-        if (res && res.error) return "Error: " + String(res.error.message || res.error.msg || res.error);
-      } catch (e) { /* noop */ }
+        if (res && res.error)
+          return (
+            "Error: " + String(res.error.message || res.error.msg || res.error)
+          );
+      } catch (e) {
+        /* noop */
+      }
       return serializeToolResult(res).slice(0, 60000);
     }
     async function* chatOutputLoop(info) {
@@ -1627,12 +2659,19 @@
       var fId = findFieldDeep(CallT, "toolCallId");
       var fName = findFieldDeep(CallT, "name");
       var fRawArgs = findFieldDeep(CallT, "rawArgs");
-      if (!toolField || !EnumT) throw new Error(TAG + " chat tools: no tool enum on " + CallT.typeName);
+      if (!toolField || !EnumT)
+        throw new Error(TAG + " chat tools: no tool enum on " + CallT.typeName);
       var mcpTools = [];
       try {
-        mcpTools = (info.meta && info.meta.chatReq && info.meta.chatReq.requestContext
-          && info.meta.chatReq.requestContext.tools) || [];
-      } catch (eM2) { mcpTools = []; }
+        mcpTools =
+          (info.meta &&
+            info.meta.chatReq &&
+            info.meta.chatReq.requestContext &&
+            info.meta.chatReq.requestContext.tools) ||
+          [];
+      } catch (eM2) {
+        mcpTools = [];
+      }
       var tools = chatToolSchemas(EnumT, mcpTools);
       if (emitter && emitter.kind === "wrap") {
         var ss2 = maybeStreamStart(RespT);
@@ -1645,16 +2684,31 @@
       for (var round = 0; ; round++) {
         var res;
         try {
-          res = await callUpstream(messages, info.model, signal, tools.length ? tools : null);
+          res = await callUpstream(
+            messages,
+            info.model,
+            signal,
+            tools.length ? tools : null,
+          );
         } catch (e) {
           if (e && e.name === "AbortError") throw e;
           throw new Error(TAG + " upstream fetch failed: " + (e && e.message));
         }
         if (!res.ok) {
           var errText3 = "";
-          try { errText3 = await res.text(); } catch (eT3) { /* noop */ }
+          try {
+            errText3 = await res.text();
+          } catch (eT3) {
+            /* noop */
+          }
           err("upstream error", res.status, errText3 && errText3.slice(0, 300));
-          throw new Error(TAG + " upstream API " + res.status + ": " + String(errText3).slice(0, 300));
+          throw new Error(
+            TAG +
+              " upstream API " +
+              res.status +
+              ": " +
+              String(errText3).slice(0, 300),
+          );
         }
         var it = sseIterator(res);
         var accText = "";
@@ -1662,10 +2716,13 @@
         try {
           while (true) {
             var r;
-            try { r = await it.next(); }
-            catch (eR2) {
+            try {
+              r = await it.next();
+            } catch (eR2) {
               if (eR2 && eR2.name === "AbortError") throw eR2;
-              throw new Error(TAG + " stream read failed: " + (eR2 && eR2.message));
+              throw new Error(
+                TAG + " stream read failed: " + (eR2 && eR2.message),
+              );
             }
             if (r.done) break;
             var part = r.value;
@@ -1679,8 +2736,9 @@
               var tcs2 = part.toolCalls || [];
               for (var ti2 = 0; ti2 < tcs2.length; ti2++) {
                 var tc2 = tcs2[ti2] || {};
-                var tidx2 = (tc2.index != null) ? tc2.index : 0;
-                if (!pending[tidx2]) pending[tidx2] = { id: "", name: "", args: "" };
+                var tidx2 = tc2.index == null ? 0 : tc2.index;
+                if (!pending[tidx2])
+                  pending[tidx2] = { id: "", name: "", args: "" };
                 if (tc2.id) pending[tidx2].id = String(tc2.id);
                 var fn2 = tc2.function || {};
                 if (fn2.name) pending[tidx2].name = String(fn2.name);
@@ -1697,30 +2755,70 @@
           }
         } finally {
           if (it && typeof it["return"] === "function") {
-            try { it["return"](); } catch (eCleanup3) { /* noop */ }
+            try {
+              it["return"]();
+            } catch (eCleanup3) {
+              /* noop */
+            }
           }
         }
-        var calls = Object.keys(pending).map(function (k) { return pending[k]; })
-          .filter(function (c) { return c.name && resolveChatTool(c.name, EnumT, mcpTools); });
+        var calls = Object.keys(pending)
+          .map((k) => pending[k])
+          .filter((c) => c.name && resolveChatTool(c.name, EnumT, mcpTools));
+        // Warn if upstream truncated the response (finish_reason: length)
+        var fr2 = it.finishReason && it.finishReason();
+        if (fr2 === "length" && !calls.length) {
+          var truncWarn2 =
+            "\n\n[Warning: Response was truncated by the upstream API (finish_reason: length). " +
+            "Try increasing maxTokens in your provider config, or simplify the request.]";
+          finalText += truncWarn2;
+          var amTrunc = makeRespMsg(emitter, RespT, truncWarn2, null);
+          if (amTrunc) yield amTrunc;
+        }
         if (!calls.length) break; // 纯文本回合 -> 结束循环
-        log("chat tool round", round + 1, "| calls:", calls.length, "(" + calls.map(function (c) { return c.name; }).join(",") + ")");
+        log(
+          "chat tool round",
+          round + 1,
+          "| calls:",
+          calls.length,
+          "(" + calls.map((c) => c.name).join(",") + ")",
+        );
         messages.push({
           role: "assistant",
           content: accText || null,
-          tool_calls: calls.map(function (c) {
-            return { id: c.id || ("chatcall_" + (++callSeq)), type: "function", function: { name: c.name, arguments: c.args || "{}" } };
-          })
+          tool_calls: calls.map((c) => ({
+            id: c.id || "chatcall_" + ++callSeq,
+            type: "function",
+            function: { name: c.name, arguments: c.args || "{}" },
+          })),
         });
         for (var ci2 = 0; ci2 < calls.length; ci2++) {
           var c3 = calls[ci2];
-          if (!c3.id) c3.id = "chatcall_" + (++callSeq);
+          if (!c3.id) c3.id = "chatcall_" + ++callSeq;
           var argsObj2 = {};
-          try { argsObj2 = JSON.parse(c3.args || "{}"); } catch (eJ2) { argsObj2 = {}; }
+          try {
+            argsObj2 = JSON.parse(c3.args || "{}");
+          } catch (eJ2) {
+            argsObj2 = {};
+          }
+          // edit_file: execute locally (search/replace via fs), skip Cursor exec
+          if (c3.name === "edit_file") {
+            var editRes2 = localEditFile(argsObj2);
+            messages.push({
+              role: "tool",
+              tool_call_id: c3.id,
+              content: JSON.stringify(editRes2).slice(0, 60000),
+            });
+            continue;
+          }
           var resolved2 = resolveChatTool(c3.name, EnumT, mcpTools);
           if (!resolved2) continue;
           var callPartial = {};
           if (fId) callPartial.toolCallId = c3.id;
-          if (fName) callPartial.name = resolved2.mcp ? (resolved2.mcp.toolName || resolved2.mcp.name) : c3.name;
+          if (fName)
+            callPartial.name = resolved2.mcp
+              ? resolved2.mcp.toolName || resolved2.mcp.name
+              : c3.name;
           setField(callPartial, toolField, EnumT[resolved2.cfg.tool]);
           if (fRawArgs) callPartial.rawArgs = c3.args || "{}";
           var pc = findFieldDeep(CallT, resolved2.cfg.paramsCase);
@@ -1737,17 +2835,27 @@
             var found2 = findChatToolResult(c3.id, watermark);
             if (found2) {
               resultMsg2 = found2.res;
-              log("chat tool result", found2.matched, "| id=" + String(resultMsg2.toolCallId || "-"));
+              log(
+                "chat tool result",
+                found2.matched,
+                "| id=" + String(resultMsg2.toolCallId || "-"),
+              );
               watermark = found2.idx + 1;
               break;
             }
             if (signal && signal.aborted) break;
-            await new Promise(function (rs2) { setTimeout(rs2, 20); });
+            await new Promise((rs2) => {
+              setTimeout(rs2, 20);
+            });
           }
           var resultText2 = resultMsg2
             ? chatToolResultText(resultMsg2)
             : "(tool execution timed out or was not executed by the client)";
-          messages.push({ role: "tool", tool_call_id: c3.id, content: resultText2 });
+          messages.push({
+            role: "tool",
+            tool_call_id: c3.id,
+            content: resultText2,
+          });
         }
       }
       if (!finalText) {
@@ -1763,7 +2871,9 @@
       try {
         info = await planPromise;
       } catch (e) {
-        throw new Error(TAG + " request extraction failed: " + (e && e.message));
+        throw new Error(
+          TAG + " request extraction failed: " + (e && e.message),
+        );
       }
       // agent.v1: 独立循环生成器(支持多轮工具调用), 不走下方单轮路径
       if (isAgentRun) {
@@ -1784,17 +2894,36 @@
       }
       if (!res.ok) {
         var errText = "";
-        try { errText = await res.text(); } catch (e) { /* noop */ }
+        try {
+          errText = await res.text();
+        } catch (e) {
+          /* noop */
+        }
         err("upstream error", res.status, errText && errText.slice(0, 300));
-        throw new Error(TAG + " upstream API " + res.status + ": " + String(errText).slice(0, 300));
+        throw new Error(
+          TAG +
+            " upstream API " +
+            res.status +
+            ": " +
+            String(errText).slice(0, 300),
+        );
       }
 
-      var useCmdkEdit = isCmdK && cmdkPlan && info.meta && info.meta.sel &&
-        cmdkPlan.startField && cmdkPlan.streamField && cmdkPlan.endField;
-      var useCmdkChat = isCmdK && !useCmdkEdit && cmdkPlan && cmdkPlan.chatField;
+      var useCmdkEdit =
+        isCmdK &&
+        cmdkPlan &&
+        info.meta &&
+        info.meta.sel &&
+        cmdkPlan.startField &&
+        cmdkPlan.streamField &&
+        cmdkPlan.endField;
+      var useCmdkChat =
+        isCmdK && !useCmdkEdit && cmdkPlan && cmdkPlan.chatField;
 
       if (!useCmdkEdit && !useCmdkChat && !emitter) {
-        throw new Error(TAG + " cannot build response message for " + RespT.typeName);
+        throw new Error(
+          TAG + " cannot build response message for " + RespT.typeName,
+        );
       }
 
       // BTe 等包装类型: 先发 streamStart（若存在）
@@ -1808,15 +2937,17 @@
       var fullText = "";
       var allText = "";
       var EDIT_ID = 1;
-      var selStart = (info.meta && info.meta.sel && info.meta.sel.startLineNumber) || 1;
+      var selStart =
+        (info.meta && info.meta.sel && info.meta.sel.startLineNumber) || 1;
       var started = false;
 
       // try/finally: 消费者提前 return()/throw 时取消上游 SSE reader, 避免 fetch 流后台泄漏
       try {
         while (true) {
           var r;
-          try { r = await it.next(); }
-          catch (e) {
+          try {
+            r = await it.next();
+          } catch (e) {
             if (e && e.name === "AbortError") throw e;
             throw new Error(TAG + " stream read failed: " + (e && e.message));
           }
@@ -1831,7 +2962,9 @@
             } else if (emitter) {
               thinkMsg = makeRespMsg(emitter, RespT, null, part.text);
             }
-            if (thinkMsg) { yield thinkMsg; }
+            if (thinkMsg) {
+              yield thinkMsg;
+            }
             continue;
           }
 
@@ -1844,24 +2977,37 @@
                 startLineNumber: selStart,
                 editId: EDIT_ID,
                 // 上限放宽到 4096 行: 模型输出可能比原选区长, 紧贴原行数会被 UI 截断
-                maxEndLineNumberExclusive: selStart + 4096
+                maxEndLineNumberExclusive: selStart + 4096,
               });
               if (sm) yield sm;
             }
             fullText += piece;
             var em = cmdkMsg("streamField", { text: piece, editId: EDIT_ID });
-            if (em) { yield em; sent++; }
+            if (em) {
+              yield em;
+              sent++;
+            }
           } else if (useCmdkChat) {
             var cm = cmdkMsg("chatField", { text: piece });
-            if (cm) { yield cm; sent++; }
+            if (cm) {
+              yield cm;
+              sent++;
+            }
           } else {
             var msg = makeRespMsg(emitter, RespT, piece, null);
-            if (msg) { yield msg; sent++; }
+            if (msg) {
+              yield msg;
+              sent++;
+            }
           }
         }
       } finally {
         if (it && typeof it["return"] === "function") {
-          try { it["return"](); } catch (eCleanup) { /* noop */ }
+          try {
+            it["return"]();
+          } catch (eCleanup) {
+            /* noop */
+          }
         }
       }
 
@@ -1869,17 +3015,24 @@
         var lineCount = Math.max(1, fullText.split("\n").length);
         var endMsg = cmdkMsg("endField", {
           endLineNumberExclusive: selStart + lineCount,
-          editId: EDIT_ID
+          editId: EDIT_ID,
         });
         if (endMsg) yield endMsg;
       }
       // 空回复兜底: 补一条占位文本(agent 由 agentOutputLoop 自行处理)
       if (sent === 0 && !useCmdkEdit) {
         if (useCmdkChat) {
-          var cm2 = cmdkMsg("chatField", { text: "(model returned empty response)" });
+          var cm2 = cmdkMsg("chatField", {
+            text: "(model returned empty response)",
+          });
           if (cm2) yield cm2;
         } else if (emitter) {
-          var m2 = makeRespMsg(emitter, RespT, "(model returned empty response)", null);
+          var m2 = makeRespMsg(
+            emitter,
+            RespT,
+            "(model returned empty response)",
+            null,
+          );
           if (m2) yield m2;
         }
       }
@@ -1896,33 +3049,48 @@
       method: method,
       header: new Headers(),
       trailer: new Headers(),
-      message: output()
+      message: output(),
     });
   }
 
   /* ---------- Transport 包装 (Proxy: 非目标方法原样转发) ---------- */
-  var stats = { gate: 0, intercept: 0, passthroughUnary: 0, passthroughStream: 0, seenStream: {}, seenUnary: {} };
+  var stats = {
+    gate: 0,
+    intercept: 0,
+    passthroughUnary: 0,
+    passthroughStream: 0,
+    seenStream: {},
+    seenUnary: {},
+  };
   function noteSeen(map, service, method) {
     try {
-      var key = service.typeName + "/" + method.name + " (kind=" + method.kind + ")";
-      if (!map[key]) { map[key] = 1; log("passthrough-not-target:", key); }
-      else map[key]++;
-    } catch (e) { /* noop */ }
+      var key =
+        service.typeName + "/" + method.name + " (kind=" + method.kind + ")";
+      if (map[key]) map[key]++;
+      else {
+        map[key] = 1;
+        log("passthrough-not-target:", key);
+      }
+    } catch (e) {
+      /* noop */
+    }
   }
   function wrapTransport(orig) {
     if (!orig) return orig;
     return new Proxy(orig, {
-      get: function (target, prop) {
+      get: (target, prop) => {
         if (prop === "unary") {
           return function () {
             var args = Array.prototype.slice.call(arguments);
-            var svcU = args[0], mthU = args[1];
+            var svcU = args[0],
+              mthU = args[1];
             if (isUsageGate(svcU, mthU)) {
               try {
                 stats.gate++;
                 return handleGateUnary(svcU, mthU);
+              } catch (eGate) {
+                err("usage-gate bypass failed:", eGate && eGate.message);
               }
-              catch (eGate) { err("usage-gate bypass failed:", eGate && eGate.message); }
             }
             stats.passthroughUnary++;
             noteSeen(stats.seenUnary, svcU, mthU);
@@ -1932,13 +3100,18 @@
         if (prop === "stream") {
           return function () {
             var args = Array.prototype.slice.call(arguments);
-            var service = args[0], method = args[1];
+            var service = args[0],
+              method = args[1];
             if (isTarget(service, method)) {
               try {
                 stats.intercept++;
                 return handleStream.apply(null, args);
               } catch (e) {
-                err("handleStream immediate error:", e && e.message, "- 回退原通道");
+                err(
+                  "handleStream immediate error:",
+                  e && e.message,
+                  "- 回退原通道",
+                );
                 return target.stream.apply(target, args);
               }
             }
@@ -1950,21 +3123,26 @@
         var v = target[prop];
         if (typeof v === "function") return v.bind(target);
         return v;
-      }
+      },
     });
   }
 
   g.__CURSOR_CM__ = {
     active: true,
-    version: "1.6.11",
+    version: "1.6.12",
     stats: stats,
     config: {
       baseUrl: CFG.baseUrl,
       defaultModel: CFG.defaultModel,
-      interceptMethods: CFG.interceptMethods || []
+      interceptMethods: CFG.interceptMethods || [],
     },
     wrap: wrapTransport,
-    refreshConfig: refreshCfg
+    refreshConfig: refreshCfg,
   };
-  log("runtime active →", CFG.baseUrl, "| targets:", (CFG.interceptMethods || []).length);
+  log(
+    "runtime active →",
+    CFG.baseUrl,
+    "| targets:",
+    (CFG.interceptMethods || []).length,
+  );
 })();

@@ -16,14 +16,16 @@ const SLOW_ONLY = !!process.env.CM_SLOW_ONLY; // 子进程模式: 只跑 T18/T19
 const PORT = SLOW_ONLY ? 3998 : 3999; // 子进程用独立端口, 避免与父进程 EADDRINUSE
 let lastRequestBody = null;
 let sseScript = null; // 可切换的 SSE 输出脚本
-let sseQueue = [];    // 多轮脚本队列(工具循环测试): 每次上游请求弹出一个
+let sseQueue = []; // 多轮脚本队列(工具循环测试): 每次上游请求弹出一个
 const requestBodies = []; // 记录每次上游请求体
 let slowMode = false; // 慢速滴流模式(每块间隔80ms)
 let sseHeaderDelay = 0; // 延迟写出响应头(测 Agent 等待上游时的心跳)
 let sseErrorStatus = 0; // 非 0 时返回该 HTTP 状态, 不写 SSE
 
 // ---------- protobuf-es v2 消息类型 mock ----------
-function camel(s) { return s.replace(/_([a-zA-Z])/g, (m, c) => c.toUpperCase()); }
+function camel(s) {
+  return s.replace(/_([a-zA-Z])/g, (m, c) => c.toUpperCase());
+}
 
 function applyPartial(target, src, T) {
   if (src === undefined || src === null) return target;
@@ -34,13 +36,20 @@ function applyPartial(target, src, T) {
       if (v && v.case) {
         let val = v.value;
         const f = m.findField(v.case); // 忠实模拟 v2 initPartial: message 值包装为实例
-        if (f && f.kind === "message" && val !== null && val !== undefined && !(val instanceof f.T)) val = new f.T(val);
+        if (
+          f &&
+          f.kind === "message" &&
+          val !== null &&
+          val !== undefined &&
+          !(val instanceof f.T)
+        )
+          val = new f.T(val);
         target[m.localName] = { case: v.case, value: val };
       }
     } else if (src[m.localName] !== undefined && src[m.localName] !== null) {
       const v = src[m.localName];
       if (m.kind === "message" && !m.repeated) {
-        target[m.localName] = (v instanceof m.T) ? v : new m.T(v);
+        target[m.localName] = v instanceof m.T ? v : new m.T(v);
       } else if (m.kind === "message" && m.repeated) {
         target[m.localName] = v.map((x) => (x instanceof m.T ? x : new m.T(x)));
       } else {
@@ -55,10 +64,24 @@ function makeType(typeName, fieldDefs) {
   const oneofs = {};
   const members = [];
   for (const f of fieldDefs) {
-    const info = { no: f.no, name: f.name, localName: camel(f.name), kind: f.kind, T: f.T, V: f.V, repeated: !!f.repeated, opt: !!f.opt };
+    const info = {
+      no: f.no,
+      name: f.name,
+      localName: camel(f.name),
+      kind: f.kind,
+      T: f.T,
+      V: f.V,
+      repeated: !!f.repeated,
+      opt: !!f.opt,
+    };
     if (f.oneof) {
       if (!oneofs[f.oneof]) {
-        const oi = { localName: f.oneof, kind: "oneof", fields: [], findField: (n) => oi.fields.find((x) => x.localName === n) };
+        const oi = {
+          localName: f.oneof,
+          kind: "oneof",
+          fields: [],
+          findField: (n) => oi.fields.find((x) => x.localName === n),
+        };
         oneofs[f.oneof] = oi;
         members.push(oi);
       }
@@ -69,7 +92,9 @@ function makeType(typeName, fieldDefs) {
     }
   }
   class T {
-    constructor(partial) { applyPartial(this, partial, T); }
+    constructor(partial) {
+      applyPartial(this, partial, T);
+    }
   }
   T.typeName = typeName;
   T.fields = { byMember: () => members };
@@ -78,135 +103,232 @@ function makeType(typeName, fieldDefs) {
 
 // 真实 Cursor proto 结构复刻
 const ThinkingT = makeType("aiserver.v1.ConversationMessage.Thinking", [
-  { no: 1, name: "text", kind: "scalar" }
+  { no: 1, name: "text", kind: "scalar" },
 ]);
 const SFt = makeType("aiserver.v1.StreamUnifiedChatResponse", [
   { no: 1, name: "text", kind: "scalar" },
   { no: 25, name: "thinking", kind: "message", T: ThinkingT, opt: true },
-  { no: 13, name: "tool_call", kind: "scalar", opt: true }
+  { no: 13, name: "tool_call", kind: "scalar", opt: true },
 ]);
 const StreamStartT = makeType("aiserver.v1.StreamStart", [
-  { no: 1, name: "padding", kind: "scalar" }
+  { no: 1, name: "padding", kind: "scalar" },
 ]);
 
 // ---------- google.protobuf well-known 类型手写 mock ----------
 // protobuf-es v2 的 Value/Struct 是手写类(非生成): static wrap(json) + typeName 前缀
 // runtime 的 isWellKnownJsonT 靠 "google.protobuf." 前缀识别
 class ValueT {
-  constructor(init) { if (init) for (const k of Object.keys(init)) this[k] = init[k]; }
-  static wrap(v) { return new ValueT({ jsonValue: v }); }
-  static fromJson(v) { return ValueT.wrap(v); }
+  constructor(init) {
+    if (init) for (const k of Object.keys(init)) this[k] = init[k];
+  }
+  static wrap(v) {
+    return new ValueT({ jsonValue: v });
+  }
+  static fromJson(v) {
+    return ValueT.wrap(v);
+  }
 }
 ValueT.typeName = "google.protobuf.Value";
 class StructT {
-  constructor(init) { if (init) for (const k of Object.keys(init)) this[k] = init[k]; }
-  static wrap(v) { return new StructT({ fields: v }); }
-  static fromJson(v) { return StructT.wrap(v); }
+  constructor(init) {
+    if (init) for (const k of Object.keys(init)) this[k] = init[k];
+  }
+  static wrap(v) {
+    return new StructT({ fields: v });
+  }
+  static fromJson(v) {
+    return StructT.wrap(v);
+  }
 }
 StructT.typeName = "google.protobuf.Struct";
 
 // ---------- Chat 界面 clientSideToolV2 工具通道类型 (v1.6.0) ----------
-const St = { // aiserver.v1.ClientSideToolV2 枚举(真实值: 逆向 workbench 实证)
-  RIPGREP_SEARCH: 3, DELETE_FILE: 11, RUN_TERMINAL_COMMAND_V2: 15, LIST_DIR_V2: 39,
-  READ_FILE_V2: 40, GLOB_FILE_SEARCH: 42, CALL_MCP_TOOL: 49, WEB_FETCH: 57
+const St = {
+  // aiserver.v1.ClientSideToolV2 枚举(真实值: 逆向 workbench 实证)
+  RIPGREP_SEARCH: 3,
+  DELETE_FILE: 11,
+  RUN_TERMINAL_COMMAND_V2: 15,
+  LIST_DIR_V2: 39,
+  READ_FILE_V2: 40,
+  GLOB_FILE_SEARCH: 42,
+  CALL_MCP_TOOL: 49,
+  WEB_FETCH: 57,
 };
 const PatternInfoT = makeType("aiserver.v1.PatternInfo", [
   { no: 1, name: "pattern", kind: "scalar" },
   { no: 2, name: "is_reg_exp", kind: "scalar", opt: true },
-  { no: 3, name: "is_case_sensitive", kind: "scalar", opt: true }
+  { no: 3, name: "is_case_sensitive", kind: "scalar", opt: true },
 ]);
 const RipgrepSearchParamsT = makeType("aiserver.v1.RipgrepSearchParams", [
-  { no: 1, name: "pattern_info", kind: "message", T: PatternInfoT }
+  { no: 1, name: "pattern_info", kind: "message", T: PatternInfoT },
 ]);
 const ReadFileV2ParamsT = makeType("aiserver.v1.ReadFileV2Params", [
   { no: 1, name: "target_file", kind: "scalar" },
   { no: 2, name: "offset", kind: "scalar", opt: true },
-  { no: 3, name: "limit", kind: "scalar", opt: true }
+  { no: 3, name: "limit", kind: "scalar", opt: true },
 ]);
 const ListDirV2ParamsT = makeType("aiserver.v1.ListDirV2Params", [
-  { no: 1, name: "target_directory", kind: "scalar" }
+  { no: 1, name: "target_directory", kind: "scalar" },
 ]);
-const RunTerminalCommandV2ParamsT = makeType("aiserver.v1.RunTerminalCommandV2Params", [
-  { no: 1, name: "command", kind: "scalar" },
-  { no: 2, name: "cwd", kind: "scalar", opt: true },
-  { no: 3, name: "require_user_approval", kind: "scalar", opt: true }
-]);
+const RunTerminalCommandV2ParamsT = makeType(
+  "aiserver.v1.RunTerminalCommandV2Params",
+  [
+    { no: 1, name: "command", kind: "scalar" },
+    { no: 2, name: "cwd", kind: "scalar", opt: true },
+    { no: 3, name: "require_user_approval", kind: "scalar", opt: true },
+  ],
+);
 const CallMcpToolParamsT = makeType("aiserver.v1.CallMcpToolParams", [
   { no: 1, name: "server", kind: "scalar" },
   { no: 2, name: "tool_name", kind: "scalar" },
-  { no: 3, name: "tool_args", kind: "message", T: StructT }
+  { no: 3, name: "tool_args", kind: "message", T: StructT },
 ]);
 const ClientSideToolV2CallT = makeType("aiserver.v1.ClientSideToolV2Call", [
   { no: 1, name: "tool", kind: "enum", T: St },
   { no: 2, name: "tool_call_id", kind: "scalar" },
   { no: 9, name: "name", kind: "scalar" },
   { no: 10, name: "raw_args", kind: "scalar" },
-  { no: 4, name: "ripgrep_search_params", kind: "message", T: RipgrepSearchParamsT, oneof: "params" },
-  { no: 5, name: "read_file_v2_params", kind: "message", T: ReadFileV2ParamsT, oneof: "params" },
-  { no: 6, name: "list_dir_v2_params", kind: "message", T: ListDirV2ParamsT, oneof: "params" },
-  { no: 7, name: "run_terminal_command_v2_params", kind: "message", T: RunTerminalCommandV2ParamsT, oneof: "params" },
-  { no: 8, name: "call_mcp_tool_params", kind: "message", T: CallMcpToolParamsT, oneof: "params" }
+  {
+    no: 4,
+    name: "ripgrep_search_params",
+    kind: "message",
+    T: RipgrepSearchParamsT,
+    oneof: "params",
+  },
+  {
+    no: 5,
+    name: "read_file_v2_params",
+    kind: "message",
+    T: ReadFileV2ParamsT,
+    oneof: "params",
+  },
+  {
+    no: 6,
+    name: "list_dir_v2_params",
+    kind: "message",
+    T: ListDirV2ParamsT,
+    oneof: "params",
+  },
+  {
+    no: 7,
+    name: "run_terminal_command_v2_params",
+    kind: "message",
+    T: RunTerminalCommandV2ParamsT,
+    oneof: "params",
+  },
+  {
+    no: 8,
+    name: "call_mcp_tool_params",
+    kind: "message",
+    T: CallMcpToolParamsT,
+    oneof: "params",
+  },
 ]);
 const ErrorT = makeType("aiserver.v1.ClientSideToolV2Result.Error", [
-  { no: 1, name: "message", kind: "scalar" }
+  { no: 1, name: "message", kind: "scalar" },
 ]);
 const ReadFileV2ResultT = makeType("aiserver.v1.ReadFileV2Result", [
   { no: 1, name: "target_file", kind: "scalar", opt: true },
-  { no: 2, name: "content", kind: "scalar" }
+  { no: 2, name: "content", kind: "scalar" },
 ]);
 const ClientSideToolV2ResultT = makeType("aiserver.v1.ClientSideToolV2Result", [
   { no: 1, name: "tool_call_id", kind: "scalar" },
   { no: 2, name: "error", kind: "message", T: ErrorT, opt: true },
-  { no: 3, name: "read_file_v2_result", kind: "message", T: ReadFileV2ResultT, oneof: "result" }
+  {
+    no: 3,
+    name: "read_file_v2_result",
+    kind: "message",
+    T: ReadFileV2ResultT,
+    oneof: "result",
+  },
 ]);
 
 const BTe = makeType("aiserver.v1.StreamUnifiedChatResponseWithTools", [
-  { no: 1, name: "client_side_tool_v2_call", kind: "message", T: ClientSideToolV2CallT, oneof: "response" },
-  { no: 2, name: "stream_unified_chat_response", kind: "message", T: SFt, oneof: "response" },
-  { no: 5, name: "stream_start", kind: "message", T: StreamStartT, oneof: "response" }
+  {
+    no: 1,
+    name: "client_side_tool_v2_call",
+    kind: "message",
+    T: ClientSideToolV2CallT,
+    oneof: "response",
+  },
+  {
+    no: 2,
+    name: "stream_unified_chat_response",
+    kind: "message",
+    T: SFt,
+    oneof: "response",
+  },
+  {
+    no: 5,
+    name: "stream_start",
+    kind: "message",
+    T: StreamStartT,
+    oneof: "response",
+  },
 ]);
 const WelcomeT = makeType("aiserver.v1.WelcomeMessage", [
-  { no: 1, name: "message", kind: "scalar" }
+  { no: 1, name: "message", kind: "scalar" },
 ]);
-const VEi = makeType("aiserver.v1.StreamUnifiedChatResponseWithToolsIdempotent", [
-  { no: 1, name: "server_chunk", kind: "message", T: BTe, oneof: "response" },
-  { no: 3, name: "welcome_message", kind: "message", T: WelcomeT, oneof: "response" },
-  { no: 4, name: "seqno_ack", kind: "scalar", oneof: "response" }
-]);
+const VEi = makeType(
+  "aiserver.v1.StreamUnifiedChatResponseWithToolsIdempotent",
+  [
+    { no: 1, name: "server_chunk", kind: "message", T: BTe, oneof: "response" },
+    {
+      no: 3,
+      name: "welcome_message",
+      kind: "message",
+      T: WelcomeT,
+      oneof: "response",
+    },
+    { no: 4, name: "seqno_ack", kind: "scalar", oneof: "response" },
+  ],
+);
 const EditStartT = makeType("aiserver.v1.StreamCmdKResponse.EditStart", [
   { no: 1, name: "start_line_number", kind: "scalar" },
   { no: 2, name: "edit_id", kind: "scalar" },
-  { no: 3, name: "max_end_line_number_exclusive", kind: "scalar", opt: true }
+  { no: 3, name: "max_end_line_number_exclusive", kind: "scalar", opt: true },
 ]);
 const EditStreamT = makeType("aiserver.v1.StreamCmdKResponse.EditStream", [
   { no: 1, name: "text", kind: "scalar" },
-  { no: 2, name: "edit_id", kind: "scalar" }
+  { no: 2, name: "edit_id", kind: "scalar" },
 ]);
 const EditEndT = makeType("aiserver.v1.StreamCmdKResponse.EditEnd", [
   { no: 1, name: "end_line_number_exclusive", kind: "scalar" },
-  { no: 2, name: "edit_id", kind: "scalar" }
+  { no: 2, name: "edit_id", kind: "scalar" },
 ]);
 const CmdKChatT = makeType("aiserver.v1.StreamCmdKResponse.Chat", [
-  { no: 1, name: "text", kind: "scalar" }
+  { no: 1, name: "text", kind: "scalar" },
 ]);
 const Zyn = makeType("aiserver.v1.StreamCmdKResponse", [
-  { no: 1, name: "edit_start", kind: "message", T: EditStartT, oneof: "response" },
-  { no: 2, name: "edit_stream", kind: "message", T: EditStreamT, oneof: "response" },
+  {
+    no: 1,
+    name: "edit_start",
+    kind: "message",
+    T: EditStartT,
+    oneof: "response",
+  },
+  {
+    no: 2,
+    name: "edit_stream",
+    kind: "message",
+    T: EditStreamT,
+    oneof: "response",
+  },
   { no: 3, name: "edit_end", kind: "message", T: EditEndT, oneof: "response" },
-  { no: 4, name: "chat", kind: "message", T: CmdKChatT, oneof: "response" }
+  { no: 4, name: "chat", kind: "message", T: CmdKChatT, oneof: "response" },
 ]);
 const Yxs = makeType("aiserver.v1.StreamCmdKResponseContextWrapped", [
   { no: 1, name: "real_response", kind: "message", T: Zyn, oneof: "response" },
-  { no: 2, name: "context_status_update", kind: "scalar", oneof: "response" }
+  { no: 2, name: "context_status_update", kind: "scalar", oneof: "response" },
 ]);
 
 // agent.v1 (Cursor Agents 界面) 协议类型复刻 — 与 glass 包实测 dump 的结构一致
 const AgentUserMessageT = makeType("agent.v1.UserMessage", [
-  { no: 1, name: "text", kind: "scalar" }
+  { no: 1, name: "text", kind: "scalar" },
 ]);
 const AgentRuleT = makeType("agent.v1.CursorRule", [
   { no: 1, name: "full_path", kind: "scalar" },
-  { no: 2, name: "content", kind: "scalar" }
+  { no: 2, name: "content", kind: "scalar" },
 ]);
 const AgentEnvT = makeType("agent.v1.RequestContextEnv", [
   { no: 1, name: "os_version", kind: "scalar" },
@@ -214,137 +336,203 @@ const AgentEnvT = makeType("agent.v1.RequestContextEnv", [
   { no: 3, name: "shell", kind: "scalar" },
   { no: 10, name: "time_zone", kind: "scalar" },
   { no: 11, name: "project_folder", kind: "scalar" },
-  { no: 12, name: "terminals_folder", kind: "scalar" }
+  { no: 12, name: "terminals_folder", kind: "scalar" },
 ]);
 const AgentRepoInfoT = makeType("agent.v1.RepositoryIndexingInfo", [
   { no: 1, name: "relative_workspace_path", kind: "scalar" },
   { no: 2, name: "remote_urls", kind: "scalar", repeated: true },
   { no: 4, name: "repo_name", kind: "scalar" },
-  { no: 5, name: "repo_owner", kind: "scalar" }
+  { no: 5, name: "repo_owner", kind: "scalar" },
 ]);
 const AgentLayoutFileT = makeType("agent.v1.LsFileTreeNode", [
-  { no: 1, name: "abs_path", kind: "scalar" }
+  { no: 1, name: "abs_path", kind: "scalar" },
 ]);
 const AgentLayoutNodeT = makeType("agent.v1.LsDirectoryTreeNode", [
   { no: 1, name: "abs_path", kind: "scalar" },
-  { no: 3, name: "children_files", kind: "message", T: AgentLayoutFileT, repeated: true },
-  { no: 6, name: "num_files", kind: "scalar" }
+  {
+    no: 3,
+    name: "children_files",
+    kind: "message",
+    T: AgentLayoutFileT,
+    repeated: true,
+  },
+  { no: 6, name: "num_files", kind: "scalar" },
 ]);
 const AgentMcpInstructionT = makeType("agent.v1.McpInstructions", [
   { no: 1, name: "server_name", kind: "scalar" },
-  { no: 2, name: "instructions", kind: "scalar" }
+  { no: 2, name: "instructions", kind: "scalar" },
 ]);
 const AgentToolT = makeType("agent.v1.Tool", [
   { no: 1, name: "name", kind: "scalar" },
   { no: 2, name: "description", kind: "scalar" },
   { no: 3, name: "provider_identifier", kind: "scalar" },
   { no: 4, name: "tool_name", kind: "scalar" },
-  { no: 5, name: "input_schema_json", kind: "scalar" }
+  { no: 5, name: "input_schema_json", kind: "scalar" },
 ]);
 const AgentRequestContextT = makeType("agent.v1.RequestContext", [
   { no: 2, name: "rules", kind: "message", T: AgentRuleT, repeated: true },
   { no: 4, name: "env", kind: "message", T: AgentEnvT },
-  { no: 6, name: "repository_info", kind: "message", T: AgentRepoInfoT, repeated: true },
-  { no: 8, name: "mcp_instructions", kind: "message", T: AgentMcpInstructionT, repeated: true },
+  {
+    no: 6,
+    name: "repository_info",
+    kind: "message",
+    T: AgentRepoInfoT,
+    repeated: true,
+  },
+  {
+    no: 8,
+    name: "mcp_instructions",
+    kind: "message",
+    T: AgentMcpInstructionT,
+    repeated: true,
+  },
   { no: 9, name: "tools", kind: "message", T: AgentToolT, repeated: true },
-  { no: 13, name: "project_layouts", kind: "message", T: AgentLayoutNodeT, repeated: true }
+  {
+    no: 13,
+    name: "project_layouts",
+    kind: "message",
+    T: AgentLayoutNodeT,
+    repeated: true,
+  },
 ]);
 // 真实结构(3.16.17 E2E dump 实证): requestContext 嵌在 UserMessageAction 层
 // (action.userMessageAction.requestContext), 而非顶层 runRequest.requestContext;
 // RunRequest.action 是 message 字段(Action 类型), Action 内部才有 "action" oneof
 const AgentUserMessageActionT = makeType("agent.v1.UserMessageAction", [
   { no: 1, name: "user_message", kind: "message", T: AgentUserMessageT },
-  { no: 2, name: "request_context", kind: "message", T: AgentRequestContextT }
+  { no: 2, name: "request_context", kind: "message", T: AgentRequestContextT },
 ]);
 const AgentActionT = makeType("agent.v1.Action", [
-  { no: 1, name: "user_message_action", kind: "message", T: AgentUserMessageActionT, oneof: "action" }
+  {
+    no: 1,
+    name: "user_message_action",
+    kind: "message",
+    T: AgentUserMessageActionT,
+    oneof: "action",
+  },
 ]);
 const AgentRunRequestT = makeType("agent.v1.RunRequest", [
   { no: 1, name: "conversation_id", kind: "scalar" },
   { no: 2, name: "action", kind: "message", T: AgentActionT },
   { no: 3, name: "custom_system_prompt", kind: "scalar" },
-  { no: 4, name: "request_context", kind: "message", T: AgentRequestContextT }
+  { no: 4, name: "request_context", kind: "message", T: AgentRequestContextT },
 ]);
 // 工具调用往返类型 (v1.5)
 const ReadToolArgsT = makeType("agent.v1.ReadToolArgs", [
   { no: 1, name: "path", kind: "scalar" },
   { no: 2, name: "offset", kind: "scalar", opt: true },
-  { no: 3, name: "limit", kind: "scalar", opt: true }
+  { no: 3, name: "limit", kind: "scalar", opt: true },
 ]);
 const ReadFileResultT = makeType("agent.v1.ReadFileResult", [
-  { no: 1, name: "content", kind: "scalar" }
+  { no: 1, name: "content", kind: "scalar" },
 ]);
 const ReadToolCallT = makeType("agent.v1.ReadToolCall", [
   { no: 1, name: "args", kind: "message", T: ReadToolArgsT },
-  { no: 2, name: "result", kind: "message", T: ReadFileResultT }
+  { no: 2, name: "result", kind: "message", T: ReadFileResultT },
 ]);
 // write_file / MCP 工具往返类型 (v1.6.0; UI 层与 exec 通道字段名不同:
 // EditToolCall.args 用 stream_content, WriteArgs 用 file_text)
 const WriteArgsT = makeType("agent.v1.WriteArgs", [
   { no: 1, name: "path", kind: "scalar" },
   { no: 2, name: "file_text", kind: "scalar" },
-  { no: 3, name: "tool_call_id", kind: "scalar" }
+  { no: 3, name: "tool_call_id", kind: "scalar" },
 ]);
 const EditArgsT = makeType("agent.v1.EditArgs", [
   { no: 1, name: "path", kind: "scalar" },
-  { no: 2, name: "stream_content", kind: "scalar" }
+  { no: 2, name: "stream_content", kind: "scalar" },
 ]);
 const WriteResultT = makeType("agent.v1.WriteResult", [
-  { no: 1, name: "message", kind: "scalar" }
+  { no: 1, name: "message", kind: "scalar" },
 ]);
 // 真实 Cursor: EditToolCall.result 是 EditResult(success oneof), 不是 exec 的 WriteResult
 const EditSuccessT = makeType("agent.v1.EditSuccess", [
   { no: 1, name: "path", kind: "scalar" },
   { no: 7, name: "after_full_file_content", kind: "scalar" },
-  { no: 8, name: "message", kind: "scalar", opt: true }
+  { no: 8, name: "message", kind: "scalar", opt: true },
 ]);
 const EditResultT = makeType("agent.v1.EditResult", [
-  { no: 1, name: "success", kind: "message", T: EditSuccessT, oneof: "result" }
+  { no: 1, name: "success", kind: "message", T: EditSuccessT, oneof: "result" },
 ]);
 const EditToolCallT = makeType("agent.v1.EditToolCall", [
   { no: 1, name: "args", kind: "message", T: EditArgsT },
-  { no: 2, name: "result", kind: "message", T: EditResultT }
+  { no: 2, name: "result", kind: "message", T: EditResultT },
 ]);
 const McpArgsT = makeType("agent.v1.McpArgs", [
   { no: 1, name: "name", kind: "scalar" },
   { no: 2, name: "args", kind: "map", V: { T: ValueT } }, // map<string, google.protobuf.Value>
   { no: 3, name: "tool_call_id", kind: "scalar" },
   { no: 4, name: "provider_identifier", kind: "scalar" },
-  { no: 5, name: "tool_name", kind: "scalar" }
+  { no: 5, name: "tool_name", kind: "scalar" },
 ]);
 const McpResultT = makeType("agent.v1.McpResult", [
-  { no: 1, name: "content", kind: "scalar" }
+  { no: 1, name: "content", kind: "scalar" },
 ]);
 const McpToolCallT = makeType("agent.v1.McpToolCall", [
   { no: 1, name: "args", kind: "message", T: McpArgsT },
-  { no: 2, name: "result", kind: "message", T: McpResultT }
+  { no: 2, name: "result", kind: "message", T: McpResultT },
 ]);
 const AgentToolCallT = makeType("agent.v1.ToolCall", [
-  { no: 8, name: "read_tool_call", kind: "message", T: ReadToolCallT, oneof: "tool" },
-  { no: 12, name: "edit_tool_call", kind: "message", T: EditToolCallT, oneof: "tool" },
-  { no: 15, name: "mcp_tool_call", kind: "message", T: McpToolCallT, oneof: "tool" }
+  {
+    no: 8,
+    name: "read_tool_call",
+    kind: "message",
+    T: ReadToolCallT,
+    oneof: "tool",
+  },
+  {
+    no: 12,
+    name: "edit_tool_call",
+    kind: "message",
+    T: EditToolCallT,
+    oneof: "tool",
+  },
+  {
+    no: 15,
+    name: "mcp_tool_call",
+    kind: "message",
+    T: McpToolCallT,
+    oneof: "tool",
+  },
 ]);
 const ToolCallStartedT = makeType("agent.v1.ToolCallStartedUpdate", [
   { no: 1, name: "call_id", kind: "scalar" },
-  { no: 2, name: "tool_call", kind: "message", T: AgentToolCallT }
+  { no: 2, name: "tool_call", kind: "message", T: AgentToolCallT },
 ]);
 const ToolCallCompletedT = makeType("agent.v1.ToolCallCompletedUpdate", [
   { no: 1, name: "call_id", kind: "scalar" },
-  { no: 2, name: "tool_call", kind: "message", T: AgentToolCallT }
+  { no: 2, name: "tool_call", kind: "message", T: AgentToolCallT },
 ]);
 const ExecClientMessageT = makeType("agent.v1.ExecClientMessage", [
   { no: 1, name: "id", kind: "scalar" },
   { no: 15, name: "exec_id", kind: "scalar" },
-  { no: 7, name: "read_result", kind: "message", T: ReadFileResultT, oneof: "message" },
-  { no: 3, name: "write_result", kind: "message", T: WriteResultT, oneof: "message" },
-  { no: 11, name: "mcp_result", kind: "message", T: McpResultT, oneof: "message" }
+  {
+    no: 7,
+    name: "read_result",
+    kind: "message",
+    T: ReadFileResultT,
+    oneof: "message",
+  },
+  {
+    no: 3,
+    name: "write_result",
+    kind: "message",
+    T: WriteResultT,
+    oneof: "message",
+  },
+  {
+    no: 11,
+    name: "mcp_result",
+    kind: "message",
+    T: McpResultT,
+    oneof: "message",
+  },
 ]);
 // ExecServerMessage — 真正驱动客户端执行工具的指令通道(v1.5.1 三段式协议)
 const ReadArgsT = makeType("agent.v1.ReadArgs", [
   { no: 1, name: "path", kind: "scalar" },
   { no: 2, name: "tool_call_id", kind: "scalar" },
   { no: 4, name: "offset", kind: "scalar", opt: true },
-  { no: 5, name: "limit", kind: "scalar", opt: true }
+  { no: 5, name: "limit", kind: "scalar", opt: true },
 ]);
 const GrepArgsT = makeType("agent.v1.GrepArgs", [
   { no: 1, name: "pattern", kind: "scalar" },
@@ -352,11 +540,11 @@ const GrepArgsT = makeType("agent.v1.GrepArgs", [
   { no: 3, name: "glob", kind: "scalar", opt: true },
   { no: 4, name: "output_mode", kind: "scalar", opt: true },
   { no: 5, name: "context_before", kind: "scalar", opt: true },
-  { no: 6, name: "context_after", kind: "scalar", opt: true }
+  { no: 6, name: "context_after", kind: "scalar", opt: true },
 ]);
 const LsArgsT = makeType("agent.v1.LsArgs", [
   { no: 1, name: "path", kind: "scalar" },
-  { no: 3, name: "tool_call_id", kind: "scalar" }
+  { no: 3, name: "tool_call_id", kind: "scalar" },
 ]);
 const ExecServerMessageT = makeType("agent.v1.ExecServerMessage", [
   { no: 1, name: "id", kind: "scalar" },
@@ -364,28 +552,102 @@ const ExecServerMessageT = makeType("agent.v1.ExecServerMessage", [
   { no: 7, name: "read_args", kind: "message", T: ReadArgsT, oneof: "message" },
   { no: 5, name: "grep_args", kind: "message", T: GrepArgsT, oneof: "message" },
   { no: 8, name: "ls_args", kind: "message", T: LsArgsT, oneof: "message" },
-  { no: 3, name: "write_args", kind: "message", T: WriteArgsT, oneof: "message" },
-  { no: 11, name: "mcp_args", kind: "message", T: McpArgsT, oneof: "message" }
+  {
+    no: 3,
+    name: "write_args",
+    kind: "message",
+    T: WriteArgsT,
+    oneof: "message",
+  },
+  { no: 11, name: "mcp_args", kind: "message", T: McpArgsT, oneof: "message" },
 ]);
 const AgentClientMsgT = makeType("agent.v1.AgentClientMessage", [
-  { no: 1, name: "run_request", kind: "message", T: AgentRunRequestT, oneof: "message" },
-  { no: 2, name: "exec_client_message", kind: "message", T: ExecClientMessageT, oneof: "message" }
+  {
+    no: 1,
+    name: "run_request",
+    kind: "message",
+    T: AgentRunRequestT,
+    oneof: "message",
+  },
+  {
+    no: 2,
+    name: "exec_client_message",
+    kind: "message",
+    T: ExecClientMessageT,
+    oneof: "message",
+  },
 ]);
-const AgentHeartbeatT = makeType("agent.v1.Heartbeat", [{ no: 1, name: "padding", kind: "scalar" }]);
-const AgentThinkingDeltaT = makeType("agent.v1.ThinkingDeltaUpdate", [{ no: 1, name: "text", kind: "scalar" }]);
-const AgentTextDeltaT = makeType("agent.v1.TextDeltaUpdate", [{ no: 1, name: "text", kind: "scalar" }]);
-const AgentTurnEndedT = makeType("agent.v1.TurnEndedUpdate", [{ no: 1, name: "reason", kind: "scalar" }]);
+const AgentHeartbeatT = makeType("agent.v1.Heartbeat", [
+  { no: 1, name: "padding", kind: "scalar" },
+]);
+const AgentThinkingDeltaT = makeType("agent.v1.ThinkingDeltaUpdate", [
+  { no: 1, name: "text", kind: "scalar" },
+]);
+const AgentTextDeltaT = makeType("agent.v1.TextDeltaUpdate", [
+  { no: 1, name: "text", kind: "scalar" },
+]);
+const AgentTurnEndedT = makeType("agent.v1.TurnEndedUpdate", [
+  { no: 1, name: "reason", kind: "scalar" },
+]);
 const AgentInteractionT = makeType("agent.v1.Interaction", [
-  { no: 1, name: "heartbeat", kind: "message", T: AgentHeartbeatT, oneof: "message" },
-  { no: 2, name: "thinking_delta", kind: "message", T: AgentThinkingDeltaT, oneof: "message" },
-  { no: 3, name: "text_delta", kind: "message", T: AgentTextDeltaT, oneof: "message" },
-  { no: 4, name: "turn_ended", kind: "message", T: AgentTurnEndedT, oneof: "message" },
-  { no: 5, name: "tool_call_started", kind: "message", T: ToolCallStartedT, oneof: "message" },
-  { no: 6, name: "tool_call_completed", kind: "message", T: ToolCallCompletedT, oneof: "message" }
+  {
+    no: 1,
+    name: "heartbeat",
+    kind: "message",
+    T: AgentHeartbeatT,
+    oneof: "message",
+  },
+  {
+    no: 2,
+    name: "thinking_delta",
+    kind: "message",
+    T: AgentThinkingDeltaT,
+    oneof: "message",
+  },
+  {
+    no: 3,
+    name: "text_delta",
+    kind: "message",
+    T: AgentTextDeltaT,
+    oneof: "message",
+  },
+  {
+    no: 4,
+    name: "turn_ended",
+    kind: "message",
+    T: AgentTurnEndedT,
+    oneof: "message",
+  },
+  {
+    no: 5,
+    name: "tool_call_started",
+    kind: "message",
+    T: ToolCallStartedT,
+    oneof: "message",
+  },
+  {
+    no: 6,
+    name: "tool_call_completed",
+    kind: "message",
+    T: ToolCallCompletedT,
+    oneof: "message",
+  },
 ]);
 const AgentServerMsgT = makeType("agent.v1.AgentServerMessage", [
-  { no: 1, name: "interaction_update", kind: "message", T: AgentInteractionT, oneof: "message" },
-  { no: 2, name: "exec_server_message", kind: "message", T: ExecServerMessageT, oneof: "message" }
+  {
+    no: 1,
+    name: "interaction_update",
+    kind: "message",
+    T: AgentInteractionT,
+    oneof: "message",
+  },
+  {
+    no: 2,
+    name: "exec_server_message",
+    kind: "message",
+    T: ExecServerMessageT,
+    oneof: "message",
+  },
 ]);
 
 // ---------- Mock OpenAI 兼容 SSE 服务器 ----------
@@ -399,11 +661,13 @@ const server = http.createServer((req, res) => {
     req.on("end", async () => {
       lastRequestBody = JSON.parse(body);
       requestBodies.push(lastRequestBody);
-      const script = sseQueue.length ? sseQueue.shift() : (sseScript || [
-        { delta: { content: "你好" } },
-        { delta: { content: "，我是" } },
-        { delta: { content: "DeepSeek" } }
-      ]);
+      const script = sseQueue.length
+        ? sseQueue.shift()
+        : sseScript || [
+            { delta: { content: "你好" } },
+            { delta: { content: "，我是" } },
+            { delta: { content: "DeepSeek" } },
+          ];
       if (sseHeaderDelay) {
         const d = sseHeaderDelay;
         sseHeaderDelay = 0;
@@ -421,16 +685,29 @@ const server = http.createServer((req, res) => {
         (async () => {
           for (const s of script) {
             if (res.destroyed || res.writableEnded) return; // 客户端abort后停止写入, 避免write-after-abort
-            try { res.write(`data: ${JSON.stringify({ choices: [{ delta: s.delta }] })}\n\n`); } catch (e) { return; }
+            try {
+              res.write(
+                `data: ${JSON.stringify({ choices: [{ delta: s.delta }] })}\n\n`,
+              );
+            } catch (e) {
+              return;
+            }
             await new Promise((r2) => setTimeout(r2, 80));
           }
           if (res.destroyed || res.writableEnded) return;
-          try { res.write("data: [DONE]\n\n"); res.end(); } catch (e) { /* noop */ }
+          try {
+            res.write("data: [DONE]\n\n");
+            res.end();
+          } catch (e) {
+            /* noop */
+          }
         })();
         return;
       }
       for (const s of script) {
-        res.write(`data: ${JSON.stringify({ choices: [{ delta: s.delta }] })}\n\n`);
+        res.write(
+          `data: ${JSON.stringify({ choices: [{ delta: s.delta }] })}\n\n`,
+        );
       }
       res.write("data: [DONE]\n\n");
       res.end();
@@ -443,10 +720,16 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, "127.0.0.1", async () => {
   console.log(`[mock] listening on ${PORT}`);
-  let pass = 0, fail = 0;
+  let pass = 0,
+    fail = 0;
   function T(name, ok, extra) {
-    if (ok) { pass++; console.log(`[PASS] ${name}`); }
-    else { fail++; console.log(`[FAIL] ${name}${extra ? " | " + extra : ""}`); }
+    if (ok) {
+      pass++;
+      console.log(`[PASS] ${name}`);
+    } else {
+      fail++;
+      console.log(`[FAIL] ${name}${extra ? " | " + extra : ""}`);
+    }
   }
   try {
     await runTests(T);
@@ -460,7 +743,11 @@ server.listen(PORT, "127.0.0.1", async () => {
       process.exit(fail > 0 ? 1 : 0);
     }
     console.log(`\n===== ${pass} passed, ${fail} failed =====`);
-    try { server.close(); } catch (e) { /* noop */ } // 父进程无 aborted 连接, close 安全且必要(否则挂起)
+    try {
+      server.close();
+    } catch (e) {
+      /* noop */
+    } // 父进程无 aborted 连接, close 安全且必要(否则挂起)
     process.exitCode = fail > 0 ? 1 : 0;
   }
 });
@@ -481,9 +768,10 @@ async function runTests(T) {
       defaultModel: "deepseek-v4-flash",
       modelMapping: { "*": "deepseek-v4-flash" },
       interceptMethods: ["aiserver.v1.ChatService/StreamUnifiedChat"],
-      extraHeaders: {}
+      extraHeaders: {},
     };
-    const srcSlow = fs.readFileSync(path.join(__dirname, "cm-runtime.js"), "utf8")
+    const srcSlow = fs
+      .readFileSync(path.join(__dirname, "cm-runtime.js"), "utf8")
       .replace("__CM_CONFIG_PLACEHOLDER__", JSON.stringify(cfgSlow));
     new Function(srcSlow)();
     const cmS = globalThis.__CURSOR_CM__;
@@ -491,35 +779,85 @@ async function runTests(T) {
     const mUnifiedS = { name: "StreamUnifiedChat", O: SFt, kind: 1 };
     const origS = {
       unary: async () => ({ stream: false, message: {} }),
-      stream: async () => { async function* o() { yield "ORIG"; } return { stream: true, message: o(), header: new Headers(), trailer: new Headers() }; }
+      stream: async () => {
+        async function* o() {
+          yield "ORIG";
+        }
+        return {
+          stream: true,
+          message: o(),
+          header: new Headers(),
+          trailer: new Headers(),
+        };
+      },
     };
     const wS = cmS.wrap(origS);
-    const chatReqS = { conversation: [{ type: 1, text: "hi" }], modelDetails: { modelName: "gpt-4" } };
-    const one = (m) => (async function* () { yield m; })();
+    const chatReqS = {
+      conversation: [{ type: 1, text: "hi" }],
+      modelDetails: { modelName: "gpt-4" },
+    };
+    const one = (m) =>
+      (async function* () {
+        yield m;
+      })();
 
-    sseScript = [{ delta: { content: "a1" } }, { delta: { content: "a2" } }, { delta: { content: "a3" } }];
+    sseScript = [
+      { delta: { content: "a1" } },
+      { delta: { content: "a2" } },
+      { delta: { content: "a3" } },
+    ];
     slowMode = true;
     try {
-      const er = await wS.stream(svcChatS, mUnifiedS, null, null, {}, one(chatReqS));
+      const er = await wS.stream(
+        svcChatS,
+        mUnifiedS,
+        null,
+        null,
+        {},
+        one(chatReqS),
+      );
       const iter = er.message[Symbol.asyncIterator]();
       await iter.next();
       const t0 = Date.now();
       await iter.return();
-      T("T18 提前return清理(及时终止)", (Date.now() - t0) < 2000);
-    } catch (e) { T("T18 提前return清理(及时终止)", false, e.message); }
+      T("T18 提前return清理(及时终止)", Date.now() - t0 < 2000);
+    } catch (e) {
+      T("T18 提前return清理(及时终止)", false, e.message);
+    }
 
-    sseScript = [{ delta: { content: "b1" } }, { delta: { content: "b2" } }, { delta: { content: "b3" } }];
+    sseScript = [
+      { delta: { content: "b1" } },
+      { delta: { content: "b2" } },
+      { delta: { content: "b3" } },
+    ];
     try {
       const ac = new AbortController();
-      const ar = await wS.stream(svcChatS, mUnifiedS, ac.signal, null, {}, one(chatReqS));
+      const ar = await wS.stream(
+        svcChatS,
+        mUnifiedS,
+        ac.signal,
+        null,
+        {},
+        one(chatReqS),
+      );
       const it19 = ar.message[Symbol.asyncIterator]();
       await it19.next();
       ac.abort();
       let abortErr = null;
-      try { while (!(await it19.next()).done) { /* drain */ } }
-      catch (e) { abortErr = e; }
-      T("T19 abort→AbortError传播", abortErr !== null && /abort/i.test(abortErr.name + abortErr.message));
-    } catch (e) { T("T19 abort→AbortError传播", false, e.message); }
+      try {
+        while (!(await it19.next()).done) {
+          /* drain */
+        }
+      } catch (e) {
+        abortErr = e;
+      }
+      T(
+        "T19 abort→AbortError传播",
+        abortErr !== null && /abort/i.test(abortErr.name + abortErr.message),
+      );
+    } catch (e) {
+      T("T19 abort→AbortError传播", false, e.message);
+    }
     slowMode = false;
     return;
   }
@@ -535,19 +873,26 @@ async function runTests(T) {
       "aiserver.v1.ChatService/StreamUnifiedChatWithTools",
       "aiserver.v1.ChatService/StreamUnifiedChatWithToolsIdempotent",
       "aiserver.v1.CmdKService/StreamCmdK",
-      "agent.v1.AgentService/Run"
+      "agent.v1.AgentService/Run",
     ],
-    extraHeaders: {}
+    extraHeaders: {},
   };
 
-  const runtimeSrc = fs.readFileSync(path.join(__dirname, "cm-runtime.js"), "utf8")
+  const runtimeSrc = fs
+    .readFileSync(path.join(__dirname, "cm-runtime.js"), "utf8")
     .replace("__CM_CONFIG_PLACEHOLDER__", JSON.stringify(cfg));
   new Function(runtimeSrc)();
   const cm = globalThis.__CURSOR_CM__;
-  const bannerVer = (runtimeSrc.match(/Cursor Custom Models Runtime v([0-9.]+)/) || [])[1];
-  T("T1 runtime active",
-    cm.active === true && /^\d+\.\d+\.\d+$/.test(String(cm.version)) && bannerVer === String(cm.version),
-    "version=" + cm.version + " banner=" + bannerVer);
+  const bannerVer = (runtimeSrc.match(
+    /Cursor Custom Models Runtime v([0-9.]+)/,
+  ) || [])[1];
+  T(
+    "T1 runtime active",
+    cm.active === true &&
+      /^\d+\.\d+\.\d+$/.test(String(cm.version)) &&
+      bannerVer === String(cm.version),
+    "version=" + cm.version + " banner=" + bannerVer,
+  );
 
   const svcChat = { typeName: "aiserver.v1.ChatService" };
   const svcCmdK = { typeName: "aiserver.v1.CmdKService" };
@@ -555,159 +900,388 @@ async function runTests(T) {
   const mUnified = { name: "StreamUnifiedChat", O: SFt, kind: 1 };
   const mWithTools = { name: "StreamUnifiedChatWithTools", O: BTe, kind: 3 };
   const mSSE = { name: "StreamUnifiedChatWithToolsSSE", O: BTe, kind: 1 }; // 轮询通道, 不拦截
-  const mIdem = { name: "StreamUnifiedChatWithToolsIdempotent", O: VEi, kind: 3 };
+  const mIdem = {
+    name: "StreamUnifiedChatWithToolsIdempotent",
+    O: VEi,
+    kind: 3,
+  };
   const mCmdK = { name: "StreamCmdK", O: Yxs, kind: 1 };
   const mOther = { name: "SomeAuthMethod" };
 
   const origCalls = [];
   const origTransport = {
-    unary: async (...a) => { origCalls.push(["unary", a[0].typeName, a[1].name]); return { stream: false, message: {} }; },
+    unary: async (...a) => {
+      origCalls.push(["unary", a[0].typeName, a[1].name]);
+      return { stream: false, message: {} };
+    },
     stream: async (...a) => {
       origCalls.push(["stream", a[0].typeName, a[1].name]);
-      async function* out() { yield "ORIG"; }
+      async function* out() {
+        yield "ORIG";
+      }
       // 与真实 Cursor transport 一致: 字段名是 message (源码 callSharedConnectStream 消费 _.message)
-      return { stream: true, message: out(), header: new Headers(), trailer: new Headers() };
+      return {
+        stream: true,
+        message: out(),
+        header: new Headers(),
+        trailer: new Headers(),
+      };
     },
-    close() { origCalls.push(["close"]); },
-    customProp: 42
+    close() {
+      origCalls.push(["close"]);
+    },
+    customProp: 42,
   };
   const wrapped = cm.wrap(origTransport);
-  const oneMsg = (m) => (async function* () { yield m; })();
+  const oneMsg = (m) =>
+    (async function* () {
+      yield m;
+    })();
 
   // T2/T3: 透传
   sseScript = null;
   let r = await wrapped.stream(svcOther, mOther, null, null, {}, oneMsg({}));
   T("T2 非目标 stream 透传", (await collect(r.message))[0] === "ORIG");
   await wrapped.unary(svcOther, mOther, null, null, {}, {});
-  T("T3 非目标 unary 透传", origCalls.some((c) => c[0] === "unary" && c[2] === "SomeAuthMethod"));
+  T(
+    "T3 非目标 unary 透传",
+    origCalls.some((c) => c[0] === "unary" && c[2] === "SomeAuthMethod"),
+  );
 
   // T4/T5: StreamUnifiedChat 直接 text 响应 + 提取与映射
   sseScript = [{ delta: { content: "A" } }, { delta: { content: "B" } }];
   const chatReq = {
     conversation: [
-      { type: 1, text: "写hello world", attachedCodeChunks: [{ relativeWorkspacePath: "main.py", lines: ["print(1)"] }] },
+      {
+        type: 1,
+        text: "写hello world",
+        attachedCodeChunks: [
+          { relativeWorkspacePath: "main.py", lines: ["print(1)"] },
+        ],
+      },
       { type: 2, text: "好的" },
-      { type: 1, text: "继续" }
+      { type: 1, text: "继续" },
     ],
-    modelDetails: { modelName: "gpt-4" }
+    modelDetails: { modelName: "gpt-4" },
   };
   r = await wrapped.stream(svcChat, mUnified, null, null, {}, oneMsg(chatReq));
   const chatMsgs = await collect(r.message);
   const chatText = chatMsgs.map((m) => m.text).join("");
   T("T4 Chat直接text响应", chatText === "AB" && chatMsgs[0] instanceof SFt);
   const msgs = lastRequestBody.messages;
-  T("T5 消息提取+模型映射",
-    msgs.length === 3 && msgs[0].role === "user" && msgs[0].content.includes("print(1)") &&
-    msgs[1].role === "assistant" && lastRequestBody.model === "deepseek-v4-pro" && lastRequestBody.stream === true);
+  T(
+    "T5 消息提取+模型映射",
+    msgs.length === 3 &&
+      msgs[0].role === "user" &&
+      msgs[0].content.includes("print(1)") &&
+      msgs[1].role === "assistant" &&
+      lastRequestBody.model === "deepseek-v4-pro" &&
+      lastRequestBody.stream === true,
+  );
 
   // T6: Agent 包装响应 (BTe): 先 streamStart, 再 streamUnifiedChatResponse.text
   sseScript = [{ delta: { content: "X" } }, { delta: { content: "Y" } }];
-  r = await wrapped.stream(svcChat, mWithTools, null, null, {}, oneMsg({
-    request: { case: "streamUnifiedChatRequest", value: { conversation: [{ type: 1, text: "hi" }], modelDetails: { modelName: "gpt-4" } } }
-  }));
+  r = await wrapped.stream(
+    svcChat,
+    mWithTools,
+    null,
+    null,
+    {},
+    oneMsg({
+      request: {
+        case: "streamUnifiedChatRequest",
+        value: {
+          conversation: [{ type: 1, text: "hi" }],
+          modelDetails: { modelName: "gpt-4" },
+        },
+      },
+    }),
+  );
   const bidiMsgs = await collect(r.message);
-  const okBidi = bidiMsgs[0] instanceof BTe &&
-    bidiMsgs[0].response && bidiMsgs[0].response.case === "streamStart" &&
-    bidiMsgs.slice(1).every((m) => m.response.case === "streamUnifiedChatResponse" && m.response.value instanceof SFt) &&
-    bidiMsgs.slice(1).map((m) => m.response.value.text).join("") === "XY";
-  T("T6 Agent包装响应(BTe)含streamStart", okBidi, JSON.stringify(bidiMsgs.map((m) => m.response && m.response.case)));
+  const okBidi =
+    bidiMsgs[0] instanceof BTe &&
+    bidiMsgs[0].response &&
+    bidiMsgs[0].response.case === "streamStart" &&
+    bidiMsgs
+      .slice(1)
+      .every(
+        (m) =>
+          m.response.case === "streamUnifiedChatResponse" &&
+          m.response.value instanceof SFt,
+      ) &&
+    bidiMsgs
+      .slice(1)
+      .map((m) => m.response.value.text)
+      .join("") === "XY";
+  T(
+    "T6 Agent包装响应(BTe)含streamStart",
+    okBidi,
+    JSON.stringify(bidiMsgs.map((m) => m.response && m.response.case)),
+  );
 
   // T7: SSE 变体是轮询通道(BidiRequestId), 默认不拦截 → 透传
-  r = await wrapped.stream(svcChat, mSSE, null, null, {}, oneMsg({ requestId: "abc" }));
+  r = await wrapped.stream(
+    svcChat,
+    mSSE,
+    null,
+    null,
+    {},
+    oneMsg({ requestId: "abc" }),
+  );
   T("T7 SSE轮询通道不拦截(透传)", (await collect(r.message))[0] === "ORIG");
 
   // T8: CmdK 编辑协议（有选区）
-  sseScript = [{ delta: { content: "line1\n" } }, { delta: { content: "line2" } }];
+  sseScript = [
+    { delta: { content: "line1\n" } },
+    { delta: { content: "line2" } },
+  ];
   const cmdkReq = {
     contextItems: [
-      { contextItem: { item: { case: "cmdKQuery", value: { query: "加注释" } } } },
-      { contextItem: { item: { case: "cmdKSelection", value: { lines: ["a", "b"], startLineNumber: 10 } } } },
-      { contextItem: { item: { case: "cmdKImmediateContext", value: { relativeWorkspacePath: "x.py", lines: [{ line: "ctx1", lineNumber: 8 }, { line: "ctx2", lineNumber: 9 }] } } } }
+      {
+        contextItem: {
+          item: { case: "cmdKQuery", value: { query: "加注释" } },
+        },
+      },
+      {
+        contextItem: {
+          item: {
+            case: "cmdKSelection",
+            value: { lines: ["a", "b"], startLineNumber: 10 },
+          },
+        },
+      },
+      {
+        contextItem: {
+          item: {
+            case: "cmdKImmediateContext",
+            value: {
+              relativeWorkspacePath: "x.py",
+              lines: [
+                { line: "ctx1", lineNumber: 8 },
+                { line: "ctx2", lineNumber: 9 },
+              ],
+            },
+          },
+        },
+      },
     ],
-    cmdKOptions: { modelDetails: { modelName: "auto" } }
+    cmdKOptions: { modelDetails: { modelName: "auto" } },
   };
   r = await wrapped.stream(svcCmdK, mCmdK, null, null, {}, oneMsg(cmdkReq));
   const cmdkMsgs = await collect(r.message);
-  const unwrap = (m) => m.response && m.response.case === "realResponse" ? m.response.value.response : null;
+  const unwrap = (m) =>
+    m.response && m.response.case === "realResponse"
+      ? m.response.value.response
+      : null;
   const startM = cmdkMsgs.map(unwrap).find((x) => x && x.case === "editStart");
-  const streamMs = cmdkMsgs.map(unwrap).filter((x) => x && x.case === "editStream");
+  const streamMs = cmdkMsgs
+    .map(unwrap)
+    .filter((x) => x && x.case === "editStream");
   const endM = cmdkMsgs.map(unwrap).find((x) => x && x.case === "editEnd");
-  T("T8 CmdK编辑协议(二级oneof)",
-    !!startM && startM.value.startLineNumber === 10 && startM.value.editId === 1 &&
-    streamMs.length === 2 && streamMs.map((m) => m.value.text).join("") === "line1\nline2" &&
-    !!endM && endM.value.endLineNumberExclusive === 12 && // 10 + 2行
-    cmdkMsgs[0] instanceof Yxs);
+  T(
+    "T8 CmdK编辑协议(二级oneof)",
+    !!startM &&
+      startM.value.startLineNumber === 10 &&
+      startM.value.editId === 1 &&
+      streamMs.length === 2 &&
+      streamMs.map((m) => m.value.text).join("") === "line1\nline2" &&
+      !!endM &&
+      endM.value.endLineNumberExclusive === 12 && // 10 + 2行
+      cmdkMsgs[0] instanceof Yxs,
+  );
 
   // T9: 上游提示词含 query+选区+文件上下文
   const c = lastRequestBody.messages[0].content;
-  T("T9 CmdK提示词组装", c.includes("加注释") && c.includes("a\nb") && c.includes("ctx1") && c.includes("x.py") && lastRequestBody.model === "deepseek-v4-flash");
+  T(
+    "T9 CmdK提示词组装",
+    c.includes("加注释") &&
+      c.includes("a\nb") &&
+      c.includes("ctx1") &&
+      c.includes("x.py") &&
+      lastRequestBody.model === "deepseek-v4-flash",
+  );
 
   // T10: CmdK 无选区 → chat 流
   sseScript = [{ delta: { content: "回答" } }];
-  r = await wrapped.stream(svcCmdK, mCmdK, null, null, {}, oneMsg({
-    contextItems: [{ contextItem: { item: { case: "cmdKQuery", value: { query: "解释" } } } }]
-  }));
+  r = await wrapped.stream(
+    svcCmdK,
+    mCmdK,
+    null,
+    null,
+    {},
+    oneMsg({
+      contextItems: [
+        {
+          contextItem: {
+            item: { case: "cmdKQuery", value: { query: "解释" } },
+          },
+        },
+      ],
+    }),
+  );
   const chat2 = await collect(r.message);
   const chatUnwrapped = chat2.map(unwrap).filter((x) => x && x.case === "chat");
-  T("T10 CmdK无选区→chat流", chatUnwrapped.length === 1 && chatUnwrapped[0].value.text === "回答");
+  T(
+    "T10 CmdK无选区→chat流",
+    chatUnwrapped.length === 1 && chatUnwrapped[0].value.text === "回答",
+  );
 
   // T11: thinking 映射
-  sseScript = [{ delta: { reasoning_content: "想一下" } }, { delta: { content: "答" } }];
+  sseScript = [
+    { delta: { reasoning_content: "想一下" } },
+    { delta: { content: "答" } },
+  ];
   r = await wrapped.stream(svcChat, mUnified, null, null, {}, oneMsg(chatReq));
   const thinkMsgs = await collect(r.message);
-  T("T11 thinking→SFt.thinking", thinkMsgs[0].thinking instanceof ThinkingT && thinkMsgs[0].thinking.text === "想一下" && thinkMsgs[1].text === "答");
+  T(
+    "T11 thinking→SFt.thinking",
+    thinkMsgs[0].thinking instanceof ThinkingT &&
+      thinkMsgs[0].thinking.text === "想一下" &&
+      thinkMsgs[1].text === "答",
+  );
 
   // T12: 上游不可达 → 抛错
-  const cmBad = new Function(runtimeSrc.replace(JSON.stringify(cfg), JSON.stringify({ ...cfg, baseUrl: "http://127.0.0.1:1/v1" })) + "\n;return globalThis.__CURSOR_CM__.wrap;")();
+  const cmBad = new Function(
+    runtimeSrc.replace(
+      JSON.stringify(cfg),
+      JSON.stringify({ ...cfg, baseUrl: "http://127.0.0.1:1/v1" }),
+    ) + "\n;return globalThis.__CURSOR_CM__.wrap;",
+  )();
   const wBad = cmBad(origTransport);
   let threw = false;
-  try { await collect((await wBad.stream(svcChat, mUnified, null, null, {}, oneMsg(chatReq))).message); } catch (e) { threw = true; }
+  try {
+    await collect(
+      (await wBad.stream(svcChat, mUnified, null, null, {}, oneMsg(chatReq)))
+        .message,
+    );
+  } catch (e) {
+    threw = true;
+  }
   T("T12 上游错误抛出", threw);
 
   // T13: 配置禁用 → 原通道
-  const cmOff = new Function(runtimeSrc.replace('"enabled":true', '"enabled":false') + "\n;return globalThis.__CURSOR_CM__;")();
+  const cmOff = new Function(
+    runtimeSrc.replace('"enabled":true', '"enabled":false') +
+      "\n;return globalThis.__CURSOR_CM__;",
+  )();
   const wOff = cmOff.wrap(origTransport);
-  const offR = await wOff.stream(svcChat, mUnified, null, null, {}, oneMsg(chatReq));
+  const offR = await wOff.stream(
+    svcChat,
+    mUnified,
+    null,
+    null,
+    {},
+    oneMsg(chatReq),
+  );
   T("T13 禁用→原通道", (await collect(offR.message))[0] === "ORIG");
 
   // T14: close/属性透传
   wrapped.close();
-  T("T14 close/属性透传", origCalls.some((x) => x[0] === "close") && wrapped.customProp === 42);
+  T(
+    "T14 close/属性透传",
+    origCalls.some((x) => x[0] === "close") && wrapped.customProp === 42,
+  );
 
   // T15: BiDi 多条合并
   sseScript = [{ delta: { content: "ok" } }];
-  r = await wrapped.stream(svcChat, mWithTools, null, null, {}, (async function* () {
-    yield { request: { case: "streamUnifiedChatRequest", value: { conversation: [{ type: 1, text: "第一条" }], modelDetails: { modelName: "gpt-4" } } } };
-    yield { request: { case: "streamUnifiedChatRequest", value: { conversation: [{ type: 1, text: "第二条" }], modelDetails: { modelName: "gpt-4" } } } };
-  })());
+  r = await wrapped.stream(
+    svcChat,
+    mWithTools,
+    null,
+    null,
+    {},
+    (async function* () {
+      yield {
+        request: {
+          case: "streamUnifiedChatRequest",
+          value: {
+            conversation: [{ type: 1, text: "第一条" }],
+            modelDetails: { modelName: "gpt-4" },
+          },
+        },
+      };
+      yield {
+        request: {
+          case: "streamUnifiedChatRequest",
+          value: {
+            conversation: [{ type: 1, text: "第二条" }],
+            modelDetails: { modelName: "gpt-4" },
+          },
+        },
+      };
+    })(),
+  );
   await collect(r.message);
-  T("T15 BiDi多包合并", lastRequestBody.messages.length === 2 && lastRequestBody.messages[1].content === "第二条");
+  T(
+    "T15 BiDi多包合并",
+    lastRequestBody.messages.length === 2 &&
+      lastRequestBody.messages[1].content === "第二条",
+  );
 
   // T16: Idempotent 通道: request.clientChunk → zEi.request.streamUnifiedChatRequest 两层递归解包
   //      响应 VEi.response.serverChunk(BTe).response.streamUnifiedChatResponse.text 三层包装
   sseScript = [{ delta: { content: "P" } }, { delta: { content: "Q" } }];
-  r = await wrapped.stream(svcChat, mIdem, null, null, {}, (async function* () {
-    yield {
-      request: {
-        case: "clientChunk",
-        value: { request: { case: "streamUnifiedChatRequest", value: { conversation: [{ type: 1, text: "幂等请求" }], modelDetails: { modelName: "gpt-4" } } } }
-      }
-    };
-    yield { request: { case: "abort", value: {} } }; // 控制包应被跳过
-  })());
+  r = await wrapped.stream(
+    svcChat,
+    mIdem,
+    null,
+    null,
+    {},
+    (async function* () {
+      yield {
+        request: {
+          case: "clientChunk",
+          value: {
+            request: {
+              case: "streamUnifiedChatRequest",
+              value: {
+                conversation: [{ type: 1, text: "幂等请求" }],
+                modelDetails: { modelName: "gpt-4" },
+              },
+            },
+          },
+        },
+      };
+      yield { request: { case: "abort", value: {} } }; // 控制包应被跳过
+    })(),
+  );
   const idemMsgs = await collect(r.message);
-  const okIdem = idemMsgs.length >= 2 &&
-    idemMsgs.every((m) => m instanceof VEi && m.response.case === "serverChunk") &&
-    idemMsgs.map((m) => { const b = m.response.value; return b && b.response.case === "streamUnifiedChatResponse" ? b.response.value.text : ""; }).join("") === "PQ";
-  T("T16 Idempotent两层解包+三层响应包装", okIdem && lastRequestBody.messages.length === 1 && lastRequestBody.messages[0].content === "幂等请求",
-    JSON.stringify(idemMsgs.map((m) => m.response && m.response.case)));
+  const okIdem =
+    idemMsgs.length >= 2 &&
+    idemMsgs.every(
+      (m) => m instanceof VEi && m.response.case === "serverChunk",
+    ) &&
+    idemMsgs
+      .map((m) => {
+        const b = m.response.value;
+        return b && b.response.case === "streamUnifiedChatResponse"
+          ? b.response.value.text
+          : "";
+      })
+      .join("") === "PQ";
+  T(
+    "T16 Idempotent两层解包+三层响应包装",
+    okIdem &&
+      lastRequestBody.messages.length === 1 &&
+      lastRequestBody.messages[0].content === "幂等请求",
+    JSON.stringify(idemMsgs.map((m) => m.response && m.response.case)),
+  );
 
   // T17: 返回结构契约(对齐真实 Cursor callSharedConnectStream 消费方式:
   //     for await(_.message) / _.header.entries() / _.trailer.entries())
   sseScript = [{ delta: { content: "契约" } }];
-  const rr = await wrapped.stream(svcChat, mUnified, null, null, {}, oneMsg(chatReq));
-  const contractOk = rr.stream === true &&
-    rr.service === svcChat && rr.method === mUnified &&
+  const rr = await wrapped.stream(
+    svcChat,
+    mUnified,
+    null,
+    null,
+    {},
+    oneMsg(chatReq),
+  );
+  const contractOk =
+    rr.stream === true &&
+    rr.service === svcChat &&
+    rr.method === mUnified &&
     typeof rr.message[Symbol.asyncIterator] === "function" &&
     typeof rr.header.entries === "function" &&
     typeof rr.trailer.entries === "function" &&
@@ -718,421 +1292,1025 @@ async function runTests(T) {
   // abort 连接存在 libuv 断言 bug(async.c:76), 崩溃隔离在子进程, 父进程按 stdout 判定
   const slow = spawnSync(process.execPath, [__filename], {
     env: { ...process.env, CM_SLOW_ONLY: "1" },
-    encoding: "utf8", timeout: 30000
+    encoding: "utf8",
+    timeout: 30000,
   });
   const slowOut = (slow.stdout || "") + (slow.stderr || "");
   const slowPass = (slowOut.match(/\[PASS\]/g) || []).length;
   const slowFail = (slowOut.match(/\[FAIL\]/g) || []).length;
   const slowSummary = slowOut.match(/slow-child: (\d+) passed, (\d+) failed/);
-  const okSlow = slowSummary ? (+slowSummary[1] === 2 && +slowSummary[2] === 0) : false;
-  T("T18+T19 abort/return清理(子进程隔离)", okSlow,
-    `pass=${slowPass} fail=${slowFail} ${okSlow ? "" : slowOut.slice(-300)}`);
+  const okSlow = slowSummary
+    ? +slowSummary[1] === 2 && +slowSummary[2] === 0
+    : false;
+  T(
+    "T18+T19 abort/return清理(子进程隔离)",
+    okSlow,
+    `pass=${slowPass} fail=${slowFail} ${okSlow ? "" : slowOut.slice(-300)}`,
+  );
 
   // T20: Usage 门禁拦截 — DashboardService 两个 unary 返回空响应(无 HARD_BLOCK)
   const svcDash = { typeName: "aiserver.v1.DashboardService" };
-  const RespGate = makeType("aiserver.v1.GetUsageLimitStatusAndActiveGrantsResponse", [
-    { no: 1, name: "usage_limit_policy_status", kind: "message", T: makeType(".UsageLimitPolicyStatus", [{ no: 1, name: "is_in_slow_pool", kind: "scalar" }]), opt: true }
-  ]);
-  const mGate1 = { name: "GetUsageLimitStatusAndActiveGrants", I: {}, O: RespGate, kind: 0 };
-  const mGate2 = { name: "GetUsageLimitPolicyStatus", I: {}, O: RespGate, kind: 0 };
+  const RespGate = makeType(
+    "aiserver.v1.GetUsageLimitStatusAndActiveGrantsResponse",
+    [
+      {
+        no: 1,
+        name: "usage_limit_policy_status",
+        kind: "message",
+        T: makeType(".UsageLimitPolicyStatus", [
+          { no: 1, name: "is_in_slow_pool", kind: "scalar" },
+        ]),
+        opt: true,
+      },
+    ],
+  );
+  const mGate1 = {
+    name: "GetUsageLimitStatusAndActiveGrants",
+    I: {},
+    O: RespGate,
+    kind: 0,
+  };
+  const mGate2 = {
+    name: "GetUsageLimitPolicyStatus",
+    I: {},
+    O: RespGate,
+    kind: 0,
+  };
   const g1 = await wrapped.unary(svcDash, mGate1, null, null, {}, {});
   const g2 = await wrapped.unary(svcDash, mGate2, null, null, {}, {});
-  const gateOk = g1.stream === false && g1.message instanceof RespGate &&
+  const gateOk =
+    g1.stream === false &&
+    g1.message instanceof RespGate &&
     g1.message.usageLimitPolicyStatus === undefined &&
-    g2.message instanceof RespGate && typeof g1.header.entries === "function";
+    g2.message instanceof RespGate &&
+    typeof g1.header.entries === "function";
   T("T20 usage门禁拦截(空响应)", gateOk);
   // T20b: 其它 DashboardService unary 透传(不误伤)
-  const mOtherDash = { name: "GetCreditGrantsBalance", I: {}, O: RespGate, kind: 0 };
+  const mOtherDash = {
+    name: "GetCreditGrantsBalance",
+    I: {},
+    O: RespGate,
+    kind: 0,
+  };
   await wrapped.unary(svcDash, mOtherDash, null, null, {}, {});
-  T("T20b 非门禁unary透传", origCalls.some((x) => x[0] === "unary" && x[1] === "aiserver.v1.DashboardService" && x[2] === "GetCreditGrantsBalance"));
+  T(
+    "T20b 非门禁unary透传",
+    origCalls.some(
+      (x) =>
+        x[0] === "unary" &&
+        x[1] === "aiserver.v1.DashboardService" &&
+        x[2] === "GetCreditGrantsBalance",
+    ),
+  );
 
   // ================= agent.v1.AgentService/Run (Cursor Agents 界面) =================
   const svcAgent = { typeName: "agent.v1.AgentService" };
   const mAgentRun = { name: "Run", O: AgentServerMsgT, kind: 3 };
-  const agentInner = (m) => (m.message && m.message.case === "interactionUpdate") ? m.message.value.message : null;
-  const mkAgentReq = (convId, text, extra) => new AgentClientMsgT({
-    message: { case: "runRequest", value: Object.assign({
-      conversationId: convId,
-      action: new AgentActionT({ action: { case: "userMessageAction", value: new AgentUserMessageActionT({ userMessage: new AgentUserMessageT({ text }) }) } })
-    }, extra || {}) }
-  });
+  const agentInner = (m) =>
+    m.message && m.message.case === "interactionUpdate"
+      ? m.message.value.message
+      : null;
+  const mkAgentReq = (convId, text, extra) =>
+    new AgentClientMsgT({
+      message: {
+        case: "runRequest",
+        value: Object.assign(
+          {
+            conversationId: convId,
+            action: new AgentActionT({
+              action: {
+                case: "userMessageAction",
+                value: new AgentUserMessageActionT({
+                  userMessage: new AgentUserMessageT({ text }),
+                }),
+              },
+            }),
+          },
+          extra || {},
+        ),
+      },
+    });
 
   // T21: agent 基础流 — 心跳预发 + textDelta 流 + turnEnded 恰好一次
   sseScript = [{ delta: { content: "你" } }, { delta: { content: "好" } }];
-  r = await wrapped.stream(svcAgent, mAgentRun, null, null, {}, oneMsg(mkAgentReq("conv-t21", "打个招呼")));
+  r = await wrapped.stream(
+    svcAgent,
+    mAgentRun,
+    null,
+    null,
+    {},
+    oneMsg(mkAgentReq("conv-t21", "打个招呼")),
+  );
   const agentMsgs = await collect(r.message);
   const inners21 = agentMsgs.map(agentInner);
-  const turnEndedCount = inners21.filter((x) => x && x.case === "turnEnded").length;
-  const textJoined = inners21.filter((x) => x && x.case === "textDelta").map((x) => x.value.text).join("");
-  T("T21 agent基础流(心跳+textDelta+turnEnded单次)",
+  const turnEndedCount = inners21.filter(
+    (x) => x && x.case === "turnEnded",
+  ).length;
+  const textJoined = inners21
+    .filter((x) => x && x.case === "textDelta")
+    .map((x) => x.value.text)
+    .join("");
+  T(
+    "T21 agent基础流(心跳+textDelta+turnEnded单次)",
     agentMsgs.every((m) => m instanceof AgentServerMsgT) &&
-    inners21[0] && inners21[0].case === "heartbeat" &&
-    textJoined === "你好" &&
-    turnEndedCount === 1 &&
-    // 纯透传(v1.6.1): 无 requestContext/customSystemPrompt 时不发 system 消息
-    lastRequestBody.messages.length === 1 &&
-    lastRequestBody.messages[0].role === "user" &&
-    lastRequestBody.messages[0].content === "打个招呼" &&
-    lastRequestBody.model === "deepseek-v4-flash",
-    JSON.stringify(inners21.map((x) => x && x.case)));
+      inners21[0] &&
+      inners21[0].case === "heartbeat" &&
+      textJoined === "你好" &&
+      turnEndedCount === 1 &&
+      // 纯透传(v1.6.1): 无 requestContext/customSystemPrompt 时不发 system 消息
+      lastRequestBody.messages.length === 1 &&
+      lastRequestBody.messages[0].role === "user" &&
+      lastRequestBody.messages[0].content === "打个招呼" &&
+      lastRequestBody.model === "deepseek-v4-flash",
+    JSON.stringify(inners21.map((x) => x && x.case)),
+  );
 
   // T22: agent thinking → thinkingDelta
-  sseScript = [{ delta: { reasoning_content: "想一下" } }, { delta: { content: "答案" } }];
-  r = await wrapped.stream(svcAgent, mAgentRun, null, null, {}, oneMsg(mkAgentReq("conv-t22", "问")));
+  sseScript = [
+    { delta: { reasoning_content: "想一下" } },
+    { delta: { content: "答案" } },
+  ];
+  r = await wrapped.stream(
+    svcAgent,
+    mAgentRun,
+    null,
+    null,
+    {},
+    oneMsg(mkAgentReq("conv-t22", "问")),
+  );
   const thinkInners = (await collect(r.message)).map(agentInner);
-  const thinkJoined22 = thinkInners.filter((x) => x && x.case === "thinkingDelta").map((x) => x.value.text).join("");
-  const textJoined22 = thinkInners.filter((x) => x && x.case === "textDelta").map((x) => x.value.text).join("");
-  T("T22 agent thinking→thinkingDelta",
+  const thinkJoined22 = thinkInners
+    .filter((x) => x && x.case === "thinkingDelta")
+    .map((x) => x.value.text)
+    .join("");
+  const textJoined22 = thinkInners
+    .filter((x) => x && x.case === "textDelta")
+    .map((x) => x.value.text)
+    .join("");
+  T(
+    "T22 agent thinking→thinkingDelta",
     thinkJoined22.indexOf("想一下") >= 0 && textJoined22 === "答案",
-    JSON.stringify(thinkInners.map((x) => x && x.case)));
+    JSON.stringify(thinkInners.map((x) => x && x.case)),
+  );
 
   // T23: agent 多轮记忆 — 同 conversationId 第二轮携带历史(含 system 规则)
   sseScript = [{ delta: { content: "二答" } }];
-  r = await wrapped.stream(svcAgent, mAgentRun, null, null, {}, oneMsg(mkAgentReq("conv-t21", "第二问", {
-    customSystemPrompt: "你是测试助手",
-    requestContext: new AgentRequestContextT({ rules: [new AgentRuleT({ content: "规则甲" })] })
-  })));
+  r = await wrapped.stream(
+    svcAgent,
+    mAgentRun,
+    null,
+    null,
+    {},
+    oneMsg(
+      mkAgentReq("conv-t21", "第二问", {
+        customSystemPrompt: "你是测试助手",
+        requestContext: new AgentRequestContextT({
+          rules: [new AgentRuleT({ content: "规则甲" })],
+        }),
+      }),
+    ),
+  );
   await collect(r.message);
   const histMsgs = lastRequestBody.messages;
-  T("T23 agent多轮记忆+system组装",
+  T(
+    "T23 agent多轮记忆+system组装",
     histMsgs.length === 4 &&
-    histMsgs[0].role === "system" && histMsgs[0].content.includes("你是测试助手") && histMsgs[0].content.includes("规则甲") &&
-    histMsgs[1].role === "user" && histMsgs[1].content === "打个招呼" &&
-    histMsgs[2].role === "assistant" && histMsgs[2].content === "你好" &&
-    histMsgs[3].role === "user" && histMsgs[3].content === "第二问",
-    JSON.stringify(histMsgs.map((m) => m.role + ":" + m.content)));
+      histMsgs[0].role === "system" &&
+      histMsgs[0].content.includes("你是测试助手") &&
+      histMsgs[0].content.includes("规则甲") &&
+      histMsgs[1].role === "user" &&
+      histMsgs[1].content === "打个招呼" &&
+      histMsgs[2].role === "assistant" &&
+      histMsgs[2].content === "你好" &&
+      histMsgs[3].role === "user" &&
+      histMsgs[3].content === "第二问",
+    JSON.stringify(histMsgs.map((m) => m.role + ":" + m.content)),
+  );
 
   // T24: agent 空回复兜底 — 占位 textDelta + turnEnded 仍恰好一次
   sseScript = [];
-  r = await wrapped.stream(svcAgent, mAgentRun, null, null, {}, oneMsg(mkAgentReq("conv-t24", "空")));
+  r = await wrapped.stream(
+    svcAgent,
+    mAgentRun,
+    null,
+    null,
+    {},
+    oneMsg(mkAgentReq("conv-t24", "空")),
+  );
   const emptyInners = (await collect(r.message)).map(agentInner);
-  const emptyText = emptyInners.filter((x) => x && x.case === "textDelta").map((x) => x.value.text).join("");
-  const emptyTurns = emptyInners.filter((x) => x && x.case === "turnEnded").length;
-  T("T24 agent空回复兜底(turnEnded单次)",
+  const emptyText = emptyInners
+    .filter((x) => x && x.case === "textDelta")
+    .map((x) => x.value.text)
+    .join("");
+  const emptyTurns = emptyInners.filter(
+    (x) => x && x.case === "turnEnded",
+  ).length;
+  T(
+    "T24 agent空回复兜底(turnEnded单次)",
     emptyText === "(model returned empty response)" && emptyTurns === 1,
-    JSON.stringify(emptyInners.map((x) => x && x.case)));
+    JSON.stringify(emptyInners.map((x) => x && x.case)),
+  );
 
   // T25: agent 工具调用循环 — 模型发 read_file → toolCallStarted/Completed →
   //      客户端回传 ExecClientMessage 结果 → 第二轮上游含 role:tool → 最终文本
   sseQueue = [
-    [{ delta: { tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "read_file", arguments: "{\"path\":\"src/a.txt\"}" } }] } }],
-    [{ delta: { content: "文件内容是X" } }]
+    [
+      {
+        delta: {
+          tool_calls: [
+            {
+              index: 0,
+              id: "call_1",
+              type: "function",
+              function: {
+                name: "read_file",
+                arguments: '{"path":"src/a.txt"}',
+              },
+            },
+          ],
+        },
+      },
+    ],
+    [{ delta: { content: "文件内容是X" } }],
   ];
   const reqBodiesBefore = requestBodies.length;
-  r = await wrapped.stream(svcAgent, mAgentRun, null, null, {}, (async function* () {
-    yield mkAgentReq("conv-t25", "读一下src/a.txt");
-    await new Promise((rs) => setTimeout(rs, 300)); // 等 runtime 进入等待窗口
-    yield new AgentClientMsgT({
-      message: { case: "execClientMessage", value: new ExecClientMessageT({
-        id: 1, execId: "call_1",
-        message: { case: "readResult", value: new ReadFileResultT({ content: "FILE-CONTENT-X" }) }
-      }) }
-    });
-  })());
+  r = await wrapped.stream(
+    svcAgent,
+    mAgentRun,
+    null,
+    null,
+    {},
+    (async function* () {
+      yield mkAgentReq("conv-t25", "读一下src/a.txt");
+      await new Promise((rs) => setTimeout(rs, 300)); // 等 runtime 进入等待窗口
+      yield new AgentClientMsgT({
+        message: {
+          case: "execClientMessage",
+          value: new ExecClientMessageT({
+            id: 1,
+            execId: "call_1",
+            message: {
+              case: "readResult",
+              value: new ReadFileResultT({ content: "FILE-CONTENT-X" }),
+            },
+          }),
+        },
+      });
+    })(),
+  );
   const toolInners = (await collect(r.message)).map(agentInner);
   const started25 = toolInners.find((x) => x && x.case === "toolCallStarted");
-  const completed25 = toolInners.find((x) => x && x.case === "toolCallCompleted");
-  const text25 = toolInners.filter((x) => x && x.case === "textDelta").map((x) => x.value.text).join("");
+  const completed25 = toolInners.find(
+    (x) => x && x.case === "toolCallCompleted",
+  );
+  const text25 = toolInners
+    .filter((x) => x && x.case === "textDelta")
+    .map((x) => x.value.text)
+    .join("");
   const turns25 = toolInners.filter((x) => x && x.case === "turnEnded").length;
   const body1 = requestBodies[reqBodiesBefore] || {};
   const body2 = requestBodies[reqBodiesBefore + 1] || {};
-  const toolMsg = body2.messages && body2.messages.find((m) => m.role === "tool");
-  const asstMsg = body2.messages && body2.messages.find((m) => m.role === "assistant" && m.tool_calls);
-  T("T25 agent工具调用循环(Started/Exec指令/结果回传/二轮)",
-    !!started25 && started25.value.callId === "call_1" &&
-    started25.value.toolCall.tool.case === "readToolCall" &&
-    started25.value.toolCall.tool.value.args.path === "src/a.txt" &&
-    !started25.value.toolCall.tool.value.result &&
-    !!completed25 && completed25.value.callId === "call_1" &&
-    completed25.value.toolCall.tool.case === "readToolCall" &&
-    completed25.value.toolCall.tool.value.result instanceof ReadFileResultT &&
-    completed25.value.toolCall.tool.value.result.content === "FILE-CONTENT-X" &&
-    text25 === "文件内容是X" && turns25 === 1 &&
-    Array.isArray(body1.tools) && body1.tools.length === 8 &&
-    !!asstMsg && asstMsg.tool_calls[0].function.name === "read_file" &&
-    !!toolMsg && toolMsg.tool_call_id === "call_1" && toolMsg.content.includes("FILE-CONTENT-X"),
-    JSON.stringify(toolInners.map((x) => x && x.case)));
+  const toolMsg =
+    body2.messages && body2.messages.find((m) => m.role === "tool");
+  const asstMsg =
+    body2.messages &&
+    body2.messages.find((m) => m.role === "assistant" && m.tool_calls);
+  T(
+    "T25 agent工具调用循环(Started/Exec指令/结果回传/二轮)",
+    !!started25 &&
+      started25.value.callId === "call_1" &&
+      started25.value.toolCall.tool.case === "readToolCall" &&
+      started25.value.toolCall.tool.value.args.path === "src/a.txt" &&
+      !started25.value.toolCall.tool.value.result &&
+      !!completed25 &&
+      completed25.value.callId === "call_1" &&
+      completed25.value.toolCall.tool.case === "readToolCall" &&
+      completed25.value.toolCall.tool.value.result instanceof ReadFileResultT &&
+      completed25.value.toolCall.tool.value.result.content ===
+        "FILE-CONTENT-X" &&
+      text25 === "文件内容是X" &&
+      turns25 === 1 &&
+      Array.isArray(body1.tools) &&
+      body1.tools.length === 9 &&
+      !!asstMsg &&
+      asstMsg.tool_calls[0].function.name === "read_file" &&
+      !!toolMsg &&
+      toolMsg.tool_call_id === "call_1" &&
+      toolMsg.content.includes("FILE-CONTENT-X"),
+    JSON.stringify(toolInners.map((x) => x && x.case)),
+  );
 
   // T26: agent 工具超时降级 — 客户端不回传结果 → 注入超时占位文本, 流程不中断
-  const wTO = new Function(runtimeSrc.replace(JSON.stringify(cfg), JSON.stringify({ ...cfg, agentToolTimeoutMs: 250 })) + "\n;return globalThis.__CURSOR_CM__.wrap;")()(origTransport);
+  const wTO = new Function(
+    runtimeSrc.replace(
+      JSON.stringify(cfg),
+      JSON.stringify({ ...cfg, agentToolTimeoutMs: 250 }),
+    ) + "\n;return globalThis.__CURSOR_CM__.wrap;",
+  )()(origTransport);
   sseQueue = [
-    [{ delta: { tool_calls: [{ index: 0, id: "call_t", type: "function", function: { name: "read_file", arguments: "{\"path\":\"x\"}" } }] } }],
-    [{ delta: { content: "降级完成" } }]
+    [
+      {
+        delta: {
+          tool_calls: [
+            {
+              index: 0,
+              id: "call_t",
+              type: "function",
+              function: { name: "read_file", arguments: '{"path":"x"}' },
+            },
+          ],
+        },
+      },
+    ],
+    [{ delta: { content: "降级完成" } }],
   ];
   const t0 = Date.now();
-  r = await wTO.stream(svcAgent, mAgentRun, null, null, {}, oneMsg(mkAgentReq("conv-t26", "读x")));
+  r = await wTO.stream(
+    svcAgent,
+    mAgentRun,
+    null,
+    null,
+    {},
+    oneMsg(mkAgentReq("conv-t26", "读x")),
+  );
   const toInners = (await collect(r.message)).map(agentInner);
-  const toText = toInners.filter((x) => x && x.case === "textDelta").map((x) => x.value.text).join("");
+  const toText = toInners
+    .filter((x) => x && x.case === "textDelta")
+    .map((x) => x.value.text)
+    .join("");
   const toToolMsg = lastRequestBody.messages.find((m) => m.role === "tool");
   const completed26 = toInners.find((x) => x && x.case === "toolCallCompleted");
-  T("T26 agent工具超时降级(不中断)",
+  T(
+    "T26 agent工具超时降级(不中断)",
     toText === "降级完成" &&
-    !!toToolMsg && /timed out/.test(toToolMsg.content) &&
-    !!completed26 && completed26.value.toolCall.tool.case === "readToolCall" &&
-    !!completed26.value.toolCall.tool.value.result &&
-    (Date.now() - t0) >= 200 && (Date.now() - t0) < 5000,
-    JSON.stringify(toInners.map((x) => x && x.case)));
+      !!toToolMsg &&
+      /timed out/.test(toToolMsg.content) &&
+      !!completed26 &&
+      completed26.value.toolCall.tool.case === "readToolCall" &&
+      !!completed26.value.toolCall.tool.value.result &&
+      Date.now() - t0 >= 200 &&
+      Date.now() - t0 < 5000,
+    JSON.stringify(toInners.map((x) => x && x.case)),
+  );
 
   // T27: requestContext 全量注入 — env/rules/仓库/目录树进入系统提示词
   sseScript = [{ delta: { content: "ok" } }];
-  r = await wrapped.stream(svcAgent, mAgentRun, null, null, {}, oneMsg(mkAgentReq("conv-t27", "项目是什么结构", {
-    requestContext: new AgentRequestContextT({
-      env: new AgentEnvT({ osVersion: "Windows 11 Pro", shell: "powershell.exe", timeZone: "Asia/Shanghai", projectFolder: "D:/demo", workspacePaths: ["D:/demo"] }),
-      rules: [new AgentRuleT({ fullPath: "D:/demo/.cursor/rules/core.mdc", content: "永远使用 TypeScript" })],
-      repositoryInfo: [new AgentRepoInfoT({ repoName: "demo-app", repoOwner: "demo-owner", remoteUrls: ["https://github.com/demo-owner/demo-app"], relativeWorkspacePath: "." })],
-      projectLayouts: [new AgentLayoutNodeT({ absPath: "D:/demo/cursor", numFiles: 3, childrenFiles: [new AgentLayoutFileT({ absPath: "D:/demo/cursor/main.ts" })] })]
-    })
-  })));
+  r = await wrapped.stream(
+    svcAgent,
+    mAgentRun,
+    null,
+    null,
+    {},
+    oneMsg(
+      mkAgentReq("conv-t27", "项目是什么结构", {
+        requestContext: new AgentRequestContextT({
+          env: new AgentEnvT({
+            osVersion: "Windows 11 Pro",
+            shell: "powershell.exe",
+            timeZone: "Asia/Shanghai",
+            projectFolder: "D:/demo",
+            workspacePaths: ["D:/demo"],
+          }),
+          rules: [
+            new AgentRuleT({
+              fullPath: "D:/demo/.cursor/rules/core.mdc",
+              content: "永远使用 TypeScript",
+            }),
+          ],
+          repositoryInfo: [
+            new AgentRepoInfoT({
+              repoName: "demo-app",
+              repoOwner: "demo-owner",
+              remoteUrls: ["https://github.com/demo-owner/demo-app"],
+              relativeWorkspacePath: ".",
+            }),
+          ],
+          projectLayouts: [
+            new AgentLayoutNodeT({
+              absPath: "D:/demo/cursor",
+              numFiles: 3,
+              childrenFiles: [
+                new AgentLayoutFileT({ absPath: "D:/demo/cursor/main.ts" }),
+              ],
+            }),
+          ],
+        }),
+      }),
+    ),
+  );
   await collect(r.message);
   const sys27 = lastRequestBody.messages[0];
-  T("T27 requestContext全量注入系统提示词",
+  T(
+    "T27 requestContext全量注入系统提示词",
     sys27.role === "system" &&
-    sys27.content.includes("OS: Windows 11 Pro") &&
-    sys27.content.includes("Shell: powershell.exe") &&
-    sys27.content.includes("Project folder: D:/demo") &&
-    sys27.content.includes("Project rules") && sys27.content.includes("永远使用 TypeScript") && sys27.content.includes("core.mdc") &&
-    sys27.content.includes("demo-owner/demo-app") &&
-    sys27.content.includes("cursor/") && sys27.content.includes("main.ts"),
-    sys27.content.slice(0, 300));
+      sys27.content.includes("OS: Windows 11 Pro") &&
+      sys27.content.includes("Shell: powershell.exe") &&
+      sys27.content.includes("Project folder: D:/demo") &&
+      sys27.content.includes("Project rules") &&
+      sys27.content.includes("永远使用 TypeScript") &&
+      sys27.content.includes("core.mdc") &&
+      sys27.content.includes("demo-owner/demo-app") &&
+      sys27.content.includes("cursor/") &&
+      sys27.content.includes("main.ts"),
+    sys27.content.slice(0, 300),
+  );
 
   // T28: 嵌套 requestContext (3.16.17 实证: 位于 action.userMessageAction 层, 顶层不填充)
   //     - 系统提示词纯透传(v1.6.1): 仅 Cursor 收集的原文数据(env/MCP 指令/工具描述),
   //       无自写角色提示词、无工具可调用 Note 声明; MCP 工具默认不带 schema;
   //     - stats.agentDebug.rcFrom 诊断为 "userMessageAction"
   sseScript = [{ delta: { content: "ok" } }];
-  r = await wrapped.stream(svcAgent, mAgentRun, null, null, {}, oneMsg(new AgentClientMsgT({
-    message: { case: "runRequest", value: {
-      conversationId: "conv-t28",
-      action: new AgentActionT({
-        action: { case: "userMessageAction", value: new AgentUserMessageActionT({
-          userMessage: new AgentUserMessageT({ text: "hi" }),
-          requestContext: new AgentRequestContextT({
-            env: new AgentEnvT({ osVersion: "win32 10.0.28000", shell: "powershell", timeZone: "Asia/Shanghai", projectFolder: "C:/demo", terminalsFolder: "C:/demo/terminals" }),
-            tools: [new AgentToolT({ name: "cursor-ide-browser-browser_navigate", providerIdentifier: "cursor-ide-browser", toolName: "browser_navigate", description: "Navigate to URL", inputSchemaJson: "{\"type\":\"object\"}" })],
-            mcpInstructions: [new AgentMcpInstructionT({ serverName: "cursor-ide-browser", instructions: "Use browser tools carefully." })]
-          })
-        }) }
-      })
-    } }
-  })));
+  r = await wrapped.stream(
+    svcAgent,
+    mAgentRun,
+    null,
+    null,
+    {},
+    oneMsg(
+      new AgentClientMsgT({
+        message: {
+          case: "runRequest",
+          value: {
+            conversationId: "conv-t28",
+            action: new AgentActionT({
+              action: {
+                case: "userMessageAction",
+                value: new AgentUserMessageActionT({
+                  userMessage: new AgentUserMessageT({ text: "hi" }),
+                  requestContext: new AgentRequestContextT({
+                    env: new AgentEnvT({
+                      osVersion: "win32 10.0.28000",
+                      shell: "powershell",
+                      timeZone: "Asia/Shanghai",
+                      projectFolder: "C:/demo",
+                      terminalsFolder: "C:/demo/terminals",
+                    }),
+                    tools: [
+                      new AgentToolT({
+                        name: "cursor-ide-browser-browser_navigate",
+                        providerIdentifier: "cursor-ide-browser",
+                        toolName: "browser_navigate",
+                        description: "Navigate to URL",
+                        inputSchemaJson: '{"type":"object"}',
+                      }),
+                    ],
+                    mcpInstructions: [
+                      new AgentMcpInstructionT({
+                        serverName: "cursor-ide-browser",
+                        instructions: "Use browser tools carefully.",
+                      }),
+                    ],
+                  }),
+                }),
+              },
+            }),
+          },
+        },
+      }),
+    ),
+  );
   await collect(r.message);
   const sys28 = lastRequestBody.messages[0];
-  T("T28 嵌套requestContext(uma层)+纯透传系统提示词",
+  T(
+    "T28 嵌套requestContext(uma层)+纯透传系统提示词",
     sys28.role === "system" &&
-    sys28.content.includes("OS: win32 10.0.28000") &&
-    sys28.content.includes("Shell: powershell") &&
-    sys28.content.includes("Terminals folder: C:/demo/terminals") &&
-    sys28.content.includes("cursor-ide-browser/browser_navigate") &&
-    sys28.content.includes("Use browser tools carefully.") &&
-    !sys28.content.includes("schema:") &&
-    !sys28.content.includes("You are an AI coding agent") &&
-    !sys28.content.includes("Note: tools you can actually invoke") &&
-    cm.stats.agentDebug && cm.stats.agentDebug.rcFrom === "userMessageAction" &&
-    cm.stats.agentDebug.sysLen > 200,
-    JSON.stringify(cm.stats.agentDebug));
+      sys28.content.includes("OS: win32 10.0.28000") &&
+      sys28.content.includes("Shell: powershell") &&
+      sys28.content.includes("Terminals folder: C:/demo/terminals") &&
+      sys28.content.includes("cursor-ide-browser/browser_navigate") &&
+      sys28.content.includes("Use browser tools carefully.") &&
+      !sys28.content.includes("schema:") &&
+      !sys28.content.includes("You are an AI coding agent") &&
+      !sys28.content.includes("Note: tools you can actually invoke") &&
+      cm.stats.agentDebug &&
+      cm.stats.agentDebug.rcFrom === "userMessageAction" &&
+      cm.stats.agentDebug.sysLen > 200,
+    JSON.stringify(cm.stats.agentDebug),
+  );
 
   // ================= Chat 界面 clientSideToolV2 工具循环 (v1.6.0) =================
   // BiDi 在首个有效请求后 50ms 放行; 工具结果须在 watermark 之后到达, 否则会被跳过
-  const chatBidiInput = (reqPayload, delayMs, afterMsg) => (async function* () {
-    yield { request: { case: "streamUnifiedChatRequest", value: reqPayload } };
-    await new Promise((rs) => setTimeout(rs, delayMs));
-    yield afterMsg;
-  })();
+  const chatBidiInput = (reqPayload, delayMs, afterMsg) =>
+    (async function* () {
+      yield {
+        request: { case: "streamUnifiedChatRequest", value: reqPayload },
+      };
+      await new Promise((rs) => setTimeout(rs, delayMs));
+      yield afterMsg;
+    })();
 
   // T29: BTe 直发 - 模型发 read_file -> clientSideToolV2Call(枚举+params oneof) ->
   //     客户端回传 clientSideToolV2Result -> 二轮上游含 role:tool -> 最终文本
   sseQueue = [
-    [{ delta: { tool_calls: [{ index: 0, id: "cc_1", type: "function", function: { name: "read_file", arguments: "{\"path\":\"src/b.txt\"}" } }] } }],
-    [{ delta: { content: "聊天读到了" } }]
+    [
+      {
+        delta: {
+          tool_calls: [
+            {
+              index: 0,
+              id: "cc_1",
+              type: "function",
+              function: {
+                name: "read_file",
+                arguments: '{"path":"src/b.txt"}',
+              },
+            },
+          ],
+        },
+      },
+    ],
+    [{ delta: { content: "聊天读到了" } }],
   ];
   const b29 = requestBodies.length;
-  r = await wrapped.stream(svcChat, mWithTools, null, null, {}, chatBidiInput(
-    { conversation: [{ type: 1, text: "读b" }], modelDetails: { modelName: "gpt-4" } }, 1200,
-    { request: { case: "clientSideToolV2Result", value: new ClientSideToolV2ResultT({
-      toolCallId: "cc_1",
-      result: { case: "readFileV2Result", value: new ReadFileV2ResultT({ targetFile: "src/b.txt", content: "CHAT-FILE-CONTENT" }) }
-    }) } }
-  ));
+  r = await wrapped.stream(
+    svcChat,
+    mWithTools,
+    null,
+    null,
+    {},
+    chatBidiInput(
+      {
+        conversation: [{ type: 1, text: "读b" }],
+        modelDetails: { modelName: "gpt-4" },
+      },
+      1200,
+      {
+        request: {
+          case: "clientSideToolV2Result",
+          value: new ClientSideToolV2ResultT({
+            toolCallId: "cc_1",
+            result: {
+              case: "readFileV2Result",
+              value: new ReadFileV2ResultT({
+                targetFile: "src/b.txt",
+                content: "CHAT-FILE-CONTENT",
+              }),
+            },
+          }),
+        },
+      },
+    ),
+  );
   const chat29 = await collect(r.message);
-  const call29 = chat29.find((m) => m instanceof BTe && m.response.case === "clientSideToolV2Call");
+  const call29 = chat29.find(
+    (m) => m instanceof BTe && m.response.case === "clientSideToolV2Call",
+  );
   const c29 = call29 && call29.response.value;
-  const text29 = chat29.filter((m) => m.response && m.response.case === "streamUnifiedChatResponse").map((m) => m.response.value.text).join("");
+  const text29 = chat29
+    .filter(
+      (m) => m.response && m.response.case === "streamUnifiedChatResponse",
+    )
+    .map((m) => m.response.value.text)
+    .join("");
   const body29a = requestBodies[b29] || {};
   const body29b = requestBodies[b29 + 1] || {};
-  const tool29 = body29b.messages && body29b.messages.find((m) => m.role === "tool");
-  T("T29 Chat工具循环(BTe clientSideToolV2Call往返)",
-    chat29[0] instanceof BTe && chat29[0].response.case === "streamStart" &&
-    !!c29 && c29 instanceof ClientSideToolV2CallT && c29.tool === St.READ_FILE_V2 &&
-    c29.toolCallId === "cc_1" && c29.name === "read_file" && String(c29.rawArgs).includes("src/b.txt") &&
-    !!c29.params && c29.params.case === "readFileV2Params" && c29.params.value instanceof ReadFileV2ParamsT &&
-    c29.params.value.targetFile === "src/b.txt" &&
-    text29 === "聊天读到了" &&
-    Array.isArray(body29a.tools) && body29a.tools.length === 7 &&
-    !!tool29 && tool29.tool_call_id === "cc_1" && tool29.content.includes("CHAT-FILE-CONTENT"),
-    JSON.stringify(chat29.map((m) => m.response && m.response.case)));
+  const tool29 =
+    body29b.messages && body29b.messages.find((m) => m.role === "tool");
+  T(
+    "T29 Chat工具循环(BTe clientSideToolV2Call往返)",
+    chat29[0] instanceof BTe &&
+      chat29[0].response.case === "streamStart" &&
+      !!c29 &&
+      c29 instanceof ClientSideToolV2CallT &&
+      c29.tool === St.READ_FILE_V2 &&
+      c29.toolCallId === "cc_1" &&
+      c29.name === "read_file" &&
+      String(c29.rawArgs).includes("src/b.txt") &&
+      !!c29.params &&
+      c29.params.case === "readFileV2Params" &&
+      c29.params.value instanceof ReadFileV2ParamsT &&
+      c29.params.value.targetFile === "src/b.txt" &&
+      text29 === "聊天读到了" &&
+      Array.isArray(body29a.tools) &&
+      body29a.tools.length === 7 &&
+      !!tool29 &&
+      tool29.tool_call_id === "cc_1" &&
+      tool29.content.includes("CHAT-FILE-CONTENT"),
+    JSON.stringify(chat29.map((m) => m.response && m.response.case)),
+  );
 
   // T30: VEi(Idempotent) 三层包装 - serverChunk(BTe) 包 clientSideToolV2Call;
   //     结果经 clientChunk 两层深入解包; build(cfg) 型参数映射(command/cwd/审批)
   sseQueue = [
-    [{ delta: { tool_calls: [{ index: 0, id: "cc_2", type: "function", function: { name: "run_terminal_cmd", arguments: "{\"command\":\"git status\",\"working_directory\":\"D:/demo\"}" } }] } }],
-    [{ delta: { content: "终端OK" } }]
+    [
+      {
+        delta: {
+          tool_calls: [
+            {
+              index: 0,
+              id: "cc_2",
+              type: "function",
+              function: {
+                name: "run_terminal_cmd",
+                arguments:
+                  '{"command":"git status","working_directory":"D:/demo"}',
+              },
+            },
+          ],
+        },
+      },
+    ],
+    [{ delta: { content: "终端OK" } }],
   ];
   const b30 = requestBodies.length;
-  r = await wrapped.stream(svcChat, mIdem, null, null, {}, (async function* () {
-    yield { request: { case: "clientChunk", value: { request: { case: "streamUnifiedChatRequest", value: { conversation: [{ type: 1, text: "跑命令" }], modelDetails: { modelName: "gpt-4" } } } } } };
-    await new Promise((rs) => setTimeout(rs, 1200));
-    yield { request: { case: "clientChunk", value: { request: { case: "clientSideToolV2Result", value: new ClientSideToolV2ResultT({ toolCallId: "cc_2" }) } } } };
-  })());
+  r = await wrapped.stream(
+    svcChat,
+    mIdem,
+    null,
+    null,
+    {},
+    (async function* () {
+      yield {
+        request: {
+          case: "clientChunk",
+          value: {
+            request: {
+              case: "streamUnifiedChatRequest",
+              value: {
+                conversation: [{ type: 1, text: "跑命令" }],
+                modelDetails: { modelName: "gpt-4" },
+              },
+            },
+          },
+        },
+      };
+      await new Promise((rs) => setTimeout(rs, 1200));
+      yield {
+        request: {
+          case: "clientChunk",
+          value: {
+            request: {
+              case: "clientSideToolV2Result",
+              value: new ClientSideToolV2ResultT({ toolCallId: "cc_2" }),
+            },
+          },
+        },
+      };
+    })(),
+  );
   const idem30 = await collect(r.message);
-  const call30 = idem30.find((m) => m instanceof VEi && m.response.case === "serverChunk" && m.response.value.response.case === "clientSideToolV2Call");
+  const call30 = idem30.find(
+    (m) =>
+      m instanceof VEi &&
+      m.response.case === "serverChunk" &&
+      m.response.value.response.case === "clientSideToolV2Call",
+  );
   const p30 = call30 && call30.response.value.response.value;
-  const text30 = idem30.filter((m) => m instanceof VEi && m.response.case === "serverChunk" && m.response.value.response.case === "streamUnifiedChatResponse").map((m) => m.response.value.response.value.text).join("");
+  const text30 = idem30
+    .filter(
+      (m) =>
+        m instanceof VEi &&
+        m.response.case === "serverChunk" &&
+        m.response.value.response.case === "streamUnifiedChatResponse",
+    )
+    .map((m) => m.response.value.response.value.text)
+    .join("");
   const body30b = requestBodies[b30 + 1] || {};
-  const tool30 = body30b.messages && body30b.messages.find((m) => m.role === "tool");
-  T("T30 Idempotent三层包装工具调用",
-    !!call30 && call30 instanceof VEi && call30.response.value instanceof BTe &&
-    !!p30 && p30 instanceof ClientSideToolV2CallT && p30.tool === St.RUN_TERMINAL_COMMAND_V2 && p30.toolCallId === "cc_2" &&
-    !!p30.params && p30.params.case === "runTerminalCommandV2Params" &&
-    p30.params.value instanceof RunTerminalCommandV2ParamsT &&
-    p30.params.value.command === "git status" && p30.params.value.cwd === "D:/demo" && p30.params.value.requireUserApproval === true &&
-    text30 === "终端OK" &&
-    !!tool30 && tool30.tool_call_id === "cc_2",
-    JSON.stringify(idem30.map((m) => m.response && m.response.case)));
+  const tool30 =
+    body30b.messages && body30b.messages.find((m) => m.role === "tool");
+  T(
+    "T30 Idempotent三层包装工具调用",
+    !!call30 &&
+      call30 instanceof VEi &&
+      call30.response.value instanceof BTe &&
+      !!p30 &&
+      p30 instanceof ClientSideToolV2CallT &&
+      p30.tool === St.RUN_TERMINAL_COMMAND_V2 &&
+      p30.toolCallId === "cc_2" &&
+      !!p30.params &&
+      p30.params.case === "runTerminalCommandV2Params" &&
+      p30.params.value instanceof RunTerminalCommandV2ParamsT &&
+      p30.params.value.command === "git status" &&
+      p30.params.value.cwd === "D:/demo" &&
+      p30.params.value.requireUserApproval === true &&
+      text30 === "终端OK" &&
+      !!tool30 &&
+      tool30.tool_call_id === "cc_2",
+    JSON.stringify(idem30.map((m) => m.response && m.response.case)),
+  );
 
   // T31: agent write_file - UI 层 editToolCall(EditArgs.streamContent) 与
   //     exec 通道 writeArgs(WriteArgs.fileText) 字段名差异 + 结果回传
   sseQueue = [
-    [{ delta: { tool_calls: [{ index: 0, id: "call_w", type: "function", function: { name: "write_file", arguments: "{\"path\":\"out/new.txt\",\"content\":\"HELLO\"}" } }] } }],
-    [{ delta: { content: "写入完成" } }]
+    [
+      {
+        delta: {
+          tool_calls: [
+            {
+              index: 0,
+              id: "call_w",
+              type: "function",
+              function: {
+                name: "write_file",
+                arguments: '{"path":"out/new.txt","content":"HELLO"}',
+              },
+            },
+          ],
+        },
+      },
+    ],
+    [{ delta: { content: "写入完成" } }],
   ];
   const b31 = requestBodies.length;
-  r = await wrapped.stream(svcAgent, mAgentRun, null, null, {}, (async function* () {
-    yield mkAgentReq("conv-t31", "写文件");
-    await new Promise((rs) => setTimeout(rs, 300));
-    yield new AgentClientMsgT({
-      message: { case: "execClientMessage", value: new ExecClientMessageT({
-        id: 1, execId: "call_w",
-        message: { case: "writeResult", value: new WriteResultT({ message: "WROTE-OK" }) }
-      }) }
-    });
-  })());
+  r = await wrapped.stream(
+    svcAgent,
+    mAgentRun,
+    null,
+    null,
+    {},
+    (async function* () {
+      yield mkAgentReq("conv-t31", "写文件");
+      await new Promise((rs) => setTimeout(rs, 300));
+      yield new AgentClientMsgT({
+        message: {
+          case: "execClientMessage",
+          value: new ExecClientMessageT({
+            id: 1,
+            execId: "call_w",
+            message: {
+              case: "writeResult",
+              value: new WriteResultT({ message: "WROTE-OK" }),
+            },
+          }),
+        },
+      });
+    })(),
+  );
   const srv31 = await collect(r.message);
   const inners31 = srv31.map(agentInner);
   const started31 = inners31.find((x) => x && x.case === "toolCallStarted");
   const completed31 = inners31.find((x) => x && x.case === "toolCallCompleted");
-  const execMsg31 = srv31.find((m) => m.message && m.message.case === "execServerMessage");
+  const execMsg31 = srv31.find(
+    (m) => m.message && m.message.case === "execServerMessage",
+  );
   const ex31 = execMsg31 && execMsg31.message.value.message;
   const stArgs31 = started31 && started31.value.toolCall.tool;
   const cpTool31 = completed31 && completed31.value.toolCall.tool;
-  const text31 = inners31.filter((x) => x && x.case === "textDelta").map((x) => x.value.text).join("");
+  const text31 = inners31
+    .filter((x) => x && x.case === "textDelta")
+    .map((x) => x.value.text)
+    .join("");
   const body31b = requestBodies[b31 + 1] || {};
-  const tool31 = body31b.messages && body31b.messages.find((m) => m.role === "tool");
-  T("T31 agent write_file(editToolCall+writeArgs双字段名)",
-    !!stArgs31 && stArgs31.case === "editToolCall" &&
-    stArgs31.value.args instanceof EditArgsT &&
-    stArgs31.value.args.path === "out/new.txt" && stArgs31.value.args.streamContent === "HELLO" &&
-    !stArgs31.value.result &&
-    !!ex31 && ex31.case === "writeArgs" && ex31.value instanceof WriteArgsT &&
-    ex31.value.path === "out/new.txt" && ex31.value.fileText === "HELLO" && ex31.value.toolCallId === "call_w" &&
-    !!cpTool31 && cpTool31.case === "editToolCall" &&
-    cpTool31.value.result instanceof EditResultT &&
-    !(cpTool31.value.result instanceof WriteResultT) &&
-    cpTool31.value.result.result && cpTool31.value.result.result.case === "success" &&
-    cpTool31.value.result.result.value instanceof EditSuccessT &&
-    cpTool31.value.result.result.value.path === "out/new.txt" &&
-    cpTool31.value.result.result.value.afterFullFileContent === "HELLO" &&
-    text31 === "写入完成" &&
-    !!tool31 && tool31.tool_call_id === "call_w" && tool31.content.includes("WROTE-OK"),
-    JSON.stringify(inners31.map((x) => x && x.case)) + "|" + String(ex31 && ex31.case));
+  const tool31 =
+    body31b.messages && body31b.messages.find((m) => m.role === "tool");
+  T(
+    "T31 agent write_file(editToolCall+writeArgs双字段名)",
+    !!stArgs31 &&
+      stArgs31.case === "editToolCall" &&
+      stArgs31.value.args instanceof EditArgsT &&
+      stArgs31.value.args.path === "out/new.txt" &&
+      stArgs31.value.args.streamContent === "HELLO" &&
+      !stArgs31.value.result &&
+      !!ex31 &&
+      ex31.case === "writeArgs" &&
+      ex31.value instanceof WriteArgsT &&
+      ex31.value.path === "out/new.txt" &&
+      ex31.value.fileText === "HELLO" &&
+      ex31.value.toolCallId === "call_w" &&
+      !!cpTool31 &&
+      cpTool31.case === "editToolCall" &&
+      cpTool31.value.result instanceof EditResultT &&
+      !(cpTool31.value.result instanceof WriteResultT) &&
+      cpTool31.value.result.result &&
+      cpTool31.value.result.result.case === "success" &&
+      cpTool31.value.result.result.value instanceof EditSuccessT &&
+      cpTool31.value.result.result.value.path === "out/new.txt" &&
+      cpTool31.value.result.result.value.afterFullFileContent === "HELLO" &&
+      text31 === "写入完成" &&
+      !!tool31 &&
+      tool31.tool_call_id === "call_w" &&
+      tool31.content.includes("WROTE-OK"),
+    JSON.stringify(inners31.map((x) => x && x.case)) +
+      "|" +
+      String(ex31 && ex31.case),
+  );
 
   // T32: agent MCP 动态工具 - requestContext.tools -> schema 下发 + mcpArgs
   //     (map<string,Value> 值经 Value.wrap) + MCP 结果回传
   sseQueue = [
-    [{ delta: { tool_calls: [{ index: 0, id: "call_m", type: "function", function: { name: "cursor-ide-browser-browser_navigate", arguments: "{\"url\":\"https://example.com\"}" } }] } }],
-    [{ delta: { content: "导航完成" } }]
+    [
+      {
+        delta: {
+          tool_calls: [
+            {
+              index: 0,
+              id: "call_m",
+              type: "function",
+              function: {
+                name: "cursor-ide-browser-browser_navigate",
+                arguments: '{"url":"https://example.com"}',
+              },
+            },
+          ],
+        },
+      },
+    ],
+    [{ delta: { content: "导航完成" } }],
   ];
   const b32 = requestBodies.length;
-  r = await wrapped.stream(svcAgent, mAgentRun, null, null, {}, (async function* () {
-    yield mkAgentReq("conv-t32", "打开网页", {
-      requestContext: new AgentRequestContextT({
-        tools: [new AgentToolT({ name: "cursor-ide-browser-browser_navigate", providerIdentifier: "cursor-ide-browser", toolName: "browser_navigate", description: "Navigate to URL", inputSchemaJson: "{\"type\":\"object\",\"properties\":{\"url\":{\"type\":\"string\"}},\"required\":[\"url\"]}" })]
-      })
-    });
-    await new Promise((rs) => setTimeout(rs, 300));
-    yield new AgentClientMsgT({
-      message: { case: "execClientMessage", value: new ExecClientMessageT({
-        id: 1, execId: "call_m",
-        message: { case: "mcpResult", value: new McpResultT({ content: "NAV-OK" }) }
-      }) }
-    });
-  })());
+  r = await wrapped.stream(
+    svcAgent,
+    mAgentRun,
+    null,
+    null,
+    {},
+    (async function* () {
+      yield mkAgentReq("conv-t32", "打开网页", {
+        requestContext: new AgentRequestContextT({
+          tools: [
+            new AgentToolT({
+              name: "cursor-ide-browser-browser_navigate",
+              providerIdentifier: "cursor-ide-browser",
+              toolName: "browser_navigate",
+              description: "Navigate to URL",
+              inputSchemaJson:
+                '{"type":"object","properties":{"url":{"type":"string"}},"required":["url"]}',
+            }),
+          ],
+        }),
+      });
+      await new Promise((rs) => setTimeout(rs, 300));
+      yield new AgentClientMsgT({
+        message: {
+          case: "execClientMessage",
+          value: new ExecClientMessageT({
+            id: 1,
+            execId: "call_m",
+            message: {
+              case: "mcpResult",
+              value: new McpResultT({ content: "NAV-OK" }),
+            },
+          }),
+        },
+      });
+    })(),
+  );
   const srv32 = await collect(r.message);
   const inners32 = srv32.map(agentInner);
   const started32 = inners32.find((x) => x && x.case === "toolCallStarted");
   const completed32 = inners32.find((x) => x && x.case === "toolCallCompleted");
   const tc32 = started32 && started32.value.toolCall.tool;
   const cp32 = completed32 && completed32.value.toolCall.tool;
-  const mcpArgs32 = tc32 && tc32.case === "mcpToolCall" ? tc32.value.args : null;
-  const execMsg32 = srv32.find((m) => m.message && m.message.case === "execServerMessage");
+  const mcpArgs32 =
+    tc32 && tc32.case === "mcpToolCall" ? tc32.value.args : null;
+  const execMsg32 = srv32.find(
+    (m) => m.message && m.message.case === "execServerMessage",
+  );
   const ex32 = execMsg32 && execMsg32.message.value.message;
   const body32a = requestBodies[b32] || {};
-  const mcpSchema32 = body32a.tools && body32a.tools.find((t) => t.function && t.function.name === "cursor-ide-browser-browser_navigate");
+  const mcpSchema32 =
+    body32a.tools &&
+    body32a.tools.find(
+      (t) =>
+        t.function && t.function.name === "cursor-ide-browser-browser_navigate",
+    );
   const body32b = requestBodies[b32 + 1] || {};
-  const tool32 = body32b.messages && body32b.messages.find((m) => m.role === "tool");
-  const text32 = inners32.filter((x) => x && x.case === "textDelta").map((x) => x.value.text).join("");
-  T("T32 agent MCP工具(mcpArgs map Value.wrap)",
-    Array.isArray(body32a.tools) && body32a.tools.length === 9 &&
-    !!mcpSchema32 && mcpSchema32.function.parameters.required[0] === "url" &&
-    !!mcpArgs32 && mcpArgs32 instanceof McpArgsT &&
-    mcpArgs32.name === "cursor-ide-browser-browser_navigate" &&
-    mcpArgs32.providerIdentifier === "cursor-ide-browser" &&
-    mcpArgs32.toolName === "browser_navigate" && mcpArgs32.toolCallId === "call_m" &&
-    !!mcpArgs32.args && mcpArgs32.args.url instanceof ValueT && mcpArgs32.args.url.jsonValue === "https://example.com" &&
-    !!ex32 && ex32.case === "mcpArgs" && ex32.value instanceof McpArgsT && ex32.value.args.url instanceof ValueT &&
-    !!cp32 && cp32.case === "mcpToolCall" &&
-    cp32.value.result instanceof McpResultT &&
-    cp32.value.result.content === "NAV-OK" &&
-    text32 === "导航完成" &&
-    !!tool32 && tool32.tool_call_id === "call_m" && tool32.content.includes("NAV-OK"),
-    JSON.stringify(inners32.map((x) => x && x.case)) + "|" + String(ex32 && ex32.case));
+  const tool32 =
+    body32b.messages && body32b.messages.find((m) => m.role === "tool");
+  const text32 = inners32
+    .filter((x) => x && x.case === "textDelta")
+    .map((x) => x.value.text)
+    .join("");
+  T(
+    "T32 agent MCP工具(mcpArgs map Value.wrap)",
+    Array.isArray(body32a.tools) &&
+      body32a.tools.length === 10 &&
+      !!mcpSchema32 &&
+      mcpSchema32.function.parameters.required[0] === "url" &&
+      !!mcpArgs32 &&
+      mcpArgs32 instanceof McpArgsT &&
+      mcpArgs32.name === "cursor-ide-browser-browser_navigate" &&
+      mcpArgs32.providerIdentifier === "cursor-ide-browser" &&
+      mcpArgs32.toolName === "browser_navigate" &&
+      mcpArgs32.toolCallId === "call_m" &&
+      !!mcpArgs32.args &&
+      mcpArgs32.args.url instanceof ValueT &&
+      mcpArgs32.args.url.jsonValue === "https://example.com" &&
+      !!ex32 &&
+      ex32.case === "mcpArgs" &&
+      ex32.value instanceof McpArgsT &&
+      ex32.value.args.url instanceof ValueT &&
+      !!cp32 &&
+      cp32.case === "mcpToolCall" &&
+      cp32.value.result instanceof McpResultT &&
+      cp32.value.result.content === "NAV-OK" &&
+      text32 === "导航完成" &&
+      !!tool32 &&
+      tool32.tool_call_id === "call_m" &&
+      tool32.content.includes("NAV-OK"),
+    JSON.stringify(inners32.map((x) => x && x.case)) +
+      "|" +
+      String(ex32 && ex32.case),
+  );
 
   // T33: Chat MCP 工具 - CALL_MCP_TOOL 枚举 + callMcpToolParams(toolArgs 为
   //     google.protobuf.Struct wrap) + 错误结果(Error.message)文本回填
   sseQueue = [
-    [{ delta: { tool_calls: [{ index: 0, id: "cc_3", type: "function", function: { name: "cursor-ide-browser-browser_navigate", arguments: "{\"url\":\"https://example.com\"}" } }] } }],
-    [{ delta: { content: "MCP完成" } }]
+    [
+      {
+        delta: {
+          tool_calls: [
+            {
+              index: 0,
+              id: "cc_3",
+              type: "function",
+              function: {
+                name: "cursor-ide-browser-browser_navigate",
+                arguments: '{"url":"https://example.com"}',
+              },
+            },
+          ],
+        },
+      },
+    ],
+    [{ delta: { content: "MCP完成" } }],
   ];
   const b33 = requestBodies.length;
-  r = await wrapped.stream(svcChat, mWithTools, null, null, {}, chatBidiInput(
-    {
-      conversation: [{ type: 1, text: "导航" }], modelDetails: { modelName: "gpt-4" },
-      requestContext: { tools: [{ name: "cursor-ide-browser-browser_navigate", providerIdentifier: "cursor-ide-browser", toolName: "browser_navigate", description: "Navigate to URL", inputSchemaJson: "{\"type\":\"object\"}" }] }
-    }, 1200,
-    { request: { case: "clientSideToolV2Result", value: new ClientSideToolV2ResultT({ toolCallId: "cc_3", error: new ErrorT({ message: "boom-expected" }) }) } }
-  ));
+  r = await wrapped.stream(
+    svcChat,
+    mWithTools,
+    null,
+    null,
+    {},
+    chatBidiInput(
+      {
+        conversation: [{ type: 1, text: "导航" }],
+        modelDetails: { modelName: "gpt-4" },
+        requestContext: {
+          tools: [
+            {
+              name: "cursor-ide-browser-browser_navigate",
+              providerIdentifier: "cursor-ide-browser",
+              toolName: "browser_navigate",
+              description: "Navigate to URL",
+              inputSchemaJson: '{"type":"object"}',
+            },
+          ],
+        },
+      },
+      1200,
+      {
+        request: {
+          case: "clientSideToolV2Result",
+          value: new ClientSideToolV2ResultT({
+            toolCallId: "cc_3",
+            error: new ErrorT({ message: "boom-expected" }),
+          }),
+        },
+      },
+    ),
+  );
   const chat33 = await collect(r.message);
-  const call33 = chat33.find((m) => m instanceof BTe && m.response.case === "clientSideToolV2Call");
+  const call33 = chat33.find(
+    (m) => m instanceof BTe && m.response.case === "clientSideToolV2Call",
+  );
   const c33 = call33 && call33.response.value;
   const body33a = requestBodies[b33] || {};
   const body33b = requestBodies[b33 + 1] || {};
-  const tool33 = body33b.messages && body33b.messages.find((m) => m.role === "tool");
-  T("T33 Chat MCP工具(CALL_MCP_TOOL+Struct)",
-    Array.isArray(body33a.tools) && body33a.tools.length === 8 &&
-    body33a.tools.some((t) => t.function && t.function.name === "cursor-ide-browser-browser_navigate") &&
-    !!c33 && c33.tool === St.CALL_MCP_TOOL && c33.toolCallId === "cc_3" &&
-    c33.name === "browser_navigate" && // MCP 调用 name 字段用 toolName
-    !!c33.params && c33.params.case === "callMcpToolParams" && c33.params.value instanceof CallMcpToolParamsT &&
-    c33.params.value.server === "cursor-ide-browser" && c33.params.value.toolName === "browser_navigate" &&
-    c33.params.value.toolArgs instanceof StructT && c33.params.value.toolArgs.fields.url === "https://example.com" &&
-    !!tool33 && tool33.tool_call_id === "cc_3" && tool33.content.includes("boom-expected"),
-    JSON.stringify(chat33.map((m) => m.response && m.response.case)));
+  const tool33 =
+    body33b.messages && body33b.messages.find((m) => m.role === "tool");
+  T(
+    "T33 Chat MCP工具(CALL_MCP_TOOL+Struct)",
+    Array.isArray(body33a.tools) &&
+      body33a.tools.length === 8 &&
+      body33a.tools.some(
+        (t) =>
+          t.function &&
+          t.function.name === "cursor-ide-browser-browser_navigate",
+      ) &&
+      !!c33 &&
+      c33.tool === St.CALL_MCP_TOOL &&
+      c33.toolCallId === "cc_3" &&
+      c33.name === "browser_navigate" && // MCP 调用 name 字段用 toolName
+      !!c33.params &&
+      c33.params.case === "callMcpToolParams" &&
+      c33.params.value instanceof CallMcpToolParamsT &&
+      c33.params.value.server === "cursor-ide-browser" &&
+      c33.params.value.toolName === "browser_navigate" &&
+      c33.params.value.toolArgs instanceof StructT &&
+      c33.params.value.toolArgs.fields.url === "https://example.com" &&
+      !!tool33 &&
+      tool33.tool_call_id === "cc_3" &&
+      tool33.content.includes("boom-expected"),
+    JSON.stringify(chat33.map((m) => m.response && m.response.case)),
+  );
 
   // T35: 真实 Cursor 会把 BiDi 流一直开着等工具结果。以前固定等 800ms 才打上游。
   sseScript = [{ delta: { content: "FAST" } }];
   let releaseHang;
-  const hang = new Promise((rs) => { releaseHang = rs; });
+  const hang = new Promise((rs) => {
+    releaseHang = rs;
+  });
   const hangingBidi = (async function* () {
-    yield { request: { case: "streamUnifiedChatRequest", value: { conversation: [{ type: 1, text: "hi" }], modelDetails: { modelName: "gpt-4" } } } };
+    yield {
+      request: {
+        case: "streamUnifiedChatRequest",
+        value: {
+          conversation: [{ type: 1, text: "hi" }],
+          modelDetails: { modelName: "gpt-4" },
+        },
+      },
+    };
     await hang;
   })();
   const t35 = Date.now();
@@ -1140,80 +2318,185 @@ async function runTests(T) {
   const hangMsgs = await collect(r.message);
   const dt35 = Date.now() - t35;
   releaseHang();
-  const hangText = hangMsgs.slice(1).map((m) => m.response && m.response.value && m.response.value.text).join("");
-  T("T35 BiDi 开流不等待800ms窗口", dt35 < 400 && hangText === "FAST", dt35 + "ms " + hangText);
+  const hangText = hangMsgs
+    .slice(1)
+    .map((m) => m.response && m.response.value && m.response.value.text)
+    .join("");
+  T(
+    "T35 BiDi 开流不等待800ms窗口",
+    dt35 < 400 && hangText === "FAST",
+    dt35 + "ms " + hangText,
+  );
 
   // T36: Cursor Agent 在 ~30s 无包时会 Connection failed。上游首包慢时必须继续心跳。
-  const wHB = new Function(runtimeSrc.replace(JSON.stringify(cfg), JSON.stringify({ ...cfg, agentHeartbeatMs: 120 })) + "\n;return globalThis.__CURSOR_CM__.wrap;")()(origTransport);
+  const wHB = new Function(
+    runtimeSrc.replace(
+      JSON.stringify(cfg),
+      JSON.stringify({ ...cfg, agentHeartbeatMs: 120 }),
+    ) + "\n;return globalThis.__CURSOR_CM__.wrap;",
+  )()(origTransport);
   sseScript = [{ delta: { content: "慢回复" } }];
   sseHeaderDelay = 400;
-  r = await wHB.stream(svcAgent, mAgentRun, null, null, {}, oneMsg(mkAgentReq("conv-t36", "慢测")));
+  r = await wHB.stream(
+    svcAgent,
+    mAgentRun,
+    null,
+    null,
+    {},
+    oneMsg(mkAgentReq("conv-t36", "慢测")),
+  );
   const hb36 = (await collect(r.message)).map(agentInner);
   const hbCount36 = hb36.filter((x) => x && x.case === "heartbeat").length;
-  const text36 = hb36.filter((x) => x && x.case === "textDelta").map((x) => x.value.text).join("");
+  const text36 = hb36
+    .filter((x) => x && x.case === "textDelta")
+    .map((x) => x.value.text)
+    .join("");
   const turns36 = hb36.filter((x) => x && x.case === "turnEnded").length;
-  T("T36 agent上游慢首包持续心跳",
+  T(
+    "T36 agent上游慢首包持续心跳",
     hbCount36 >= 3 && text36 === "慢回复" && turns36 === 1,
-    JSON.stringify(hb36.map((x) => x && x.case)) + " hb=" + hbCount36);
+    JSON.stringify(hb36.map((x) => x && x.case)) + " hb=" + hbCount36,
+  );
 
   // T37: 上游 500 不能 throw(否则 Cursor 报 Connection failed / stream ended without turnEnded)
   sseErrorStatus = 500;
-  r = await wrapped.stream(svcAgent, mAgentRun, null, null, {}, oneMsg(mkAgentReq("conv-t37", "炸了")));
+  r = await wrapped.stream(
+    svcAgent,
+    mAgentRun,
+    null,
+    null,
+    {},
+    oneMsg(mkAgentReq("conv-t37", "炸了")),
+  );
   const err37 = (await collect(r.message)).map(agentInner);
-  const text37 = err37.filter((x) => x && x.case === "textDelta").map((x) => x.value.text).join("");
+  const text37 = err37
+    .filter((x) => x && x.case === "textDelta")
+    .map((x) => x.value.text)
+    .join("");
   const turns37 = err37.filter((x) => x && x.case === "turnEnded").length;
-  T("T37 agent上游错误收成text+turnEnded(不抛)",
+  T(
+    "T37 agent上游错误收成text+turnEnded(不抛)",
     turns37 === 1 && /upstream API 500/.test(text37),
-    JSON.stringify(err37.map((x) => x && x.case)) + " " + text37.slice(0, 80));
+    JSON.stringify(err37.map((x) => x && x.case)) + " " + text37.slice(0, 80),
+  );
 
   // T38: heartbeatWhile 必须 race 上游 Promise。若对每个 SSE chunk 先 sleep 200ms
   //     再看 settled, 10 个 token 会空等 ~2s —— 1.6.5 引入的体感卡死。
   sseScript = [];
-  for (let i = 0; i < 10; i++) sseScript.push({ delta: { content: String(i) } });
+  for (let i = 0; i < 10; i++)
+    sseScript.push({ delta: { content: String(i) } });
   const t38 = Date.now();
-  r = await wrapped.stream(svcAgent, mAgentRun, null, null, {}, oneMsg(mkAgentReq("conv-t38", "快流")));
+  r = await wrapped.stream(
+    svcAgent,
+    mAgentRun,
+    null,
+    null,
+    {},
+    oneMsg(mkAgentReq("conv-t38", "快流")),
+  );
   const inners38 = (await collect(r.message)).map(agentInner);
   const dt38 = Date.now() - t38;
-  const text38 = inners38.filter((x) => x && x.case === "textDelta").map((x) => x.value.text).join("");
-  T("T38 agent SSE 多 chunk 不按块空等200ms",
+  const text38 = inners38
+    .filter((x) => x && x.case === "textDelta")
+    .map((x) => x.value.text)
+    .join("");
+  T(
+    "T38 agent SSE 多 chunk 不按块空等200ms",
     dt38 < 600 && text38 === "0123456789",
-    dt38 + "ms " + text38 + " " + JSON.stringify(inners38.map((x) => x && x.case)));
+    dt38 +
+      "ms " +
+      text38 +
+      " " +
+      JSON.stringify(inners38.map((x) => x && x.case)),
+  );
 
   // T39: 同一轮既有计划正文又有 tool_calls 时, 计划进 thinkingDelta 而不是
   //     textDelta。否则 UI 会堆 "Let me write…" 然后工具失败再堆一遍。
   sseQueue = [
     [
       { delta: { content: "Let me write AGENTS.md" } },
-      { delta: { tool_calls: [{ index: 0, id: "call_w2", type: "function", function: { name: "write_file", arguments: "{\"path\":\"AGENTS.md\",\"content\":\"# hi\"}" } }] } }
+      {
+        delta: {
+          tool_calls: [
+            {
+              index: 0,
+              id: "call_w2",
+              type: "function",
+              function: {
+                name: "write_file",
+                arguments: '{"path":"AGENTS.md","content":"# hi"}',
+              },
+            },
+          ],
+        },
+      },
     ],
-    [{ delta: { content: "写好了" } }]
+    [{ delta: { content: "写好了" } }],
   ];
-  r = await wrapped.stream(svcAgent, mAgentRun, null, null, {}, (async function* () {
-    yield mkAgentReq("conv-t39", "写 AGENTS.md");
-    await new Promise((rs) => setTimeout(rs, 300));
-    yield new AgentClientMsgT({
-      message: { case: "execClientMessage", value: new ExecClientMessageT({
-        id: 1, execId: "call_w2",
-        message: { case: "writeResult", value: new WriteResultT({ message: "WROTE-OK" }) }
-      }) }
-    });
-  })());
+  r = await wrapped.stream(
+    svcAgent,
+    mAgentRun,
+    null,
+    null,
+    {},
+    (async function* () {
+      yield mkAgentReq("conv-t39", "写 AGENTS.md");
+      await new Promise((rs) => setTimeout(rs, 300));
+      yield new AgentClientMsgT({
+        message: {
+          case: "execClientMessage",
+          value: new ExecClientMessageT({
+            id: 1,
+            execId: "call_w2",
+            message: {
+              case: "writeResult",
+              value: new WriteResultT({ message: "WROTE-OK" }),
+            },
+          }),
+        },
+      });
+    })(),
+  );
   const inners39 = (await collect(r.message)).map(agentInner);
-  const text39 = inners39.filter((x) => x && x.case === "textDelta").map((x) => x.value.text).join("");
-  const think39 = inners39.filter((x) => x && x.case === "thinkingDelta").map((x) => x.value.text).join("");
+  const text39 = inners39
+    .filter((x) => x && x.case === "textDelta")
+    .map((x) => x.value.text)
+    .join("");
+  const think39 = inners39
+    .filter((x) => x && x.case === "thinkingDelta")
+    .map((x) => x.value.text)
+    .join("");
   const started39 = inners39.find((x) => x && x.case === "toolCallStarted");
-  T("T39 工具轮次计划文案进thinking不进回复",
+  T(
+    "T39 工具轮次计划文案进thinking不进回复",
     text39 === "写好了" &&
-    think39.indexOf("Let me write AGENTS.md") >= 0 &&
-    !!started39 && !started39.value.toolCall.tool.value.result,
-    JSON.stringify(inners39.map((x) => x && x.case)) + " text=" + text39 + " think=" + think39);
+      think39.indexOf("Let me write AGENTS.md") >= 0 &&
+      !!started39 &&
+      !started39.value.toolCall.tool.value.result,
+    JSON.stringify(inners39.map((x) => x && x.case)) +
+      " text=" +
+      text39 +
+      " think=" +
+      think39,
+  );
 
   // T40: Agent 可见回复必须边收边发 textDelta。旧逻辑把整段 SSE 攒成 thinking
   //     再在流结束后回放 textDelta，体感就是“不在流”（与上游快慢无关）。
   slowMode = true;
-  sseScript = [{ delta: { content: "A" } }, { delta: { content: "B" } }, { delta: { content: "C" } }];
+  sseScript = [
+    { delta: { content: "A" } },
+    { delta: { content: "B" } },
+    { delta: { content: "C" } },
+  ];
   const t40 = Date.now();
-  r = await wrapped.stream(svcAgent, mAgentRun, null, null, {}, oneMsg(mkAgentReq("conv-t40", "流")));
+  r = await wrapped.stream(
+    svcAgent,
+    mAgentRun,
+    null,
+    null,
+    {},
+    oneMsg(mkAgentReq("conv-t40", "流")),
+  );
   let firstTextAt = -1;
   const t40text = [];
   for await (const m of r.message) {
@@ -1224,39 +2507,70 @@ async function runTests(T) {
     }
   }
   slowMode = false;
-  T("T40 agent textDelta 边收边发",
+  T(
+    "T40 agent textDelta 边收边发",
     t40text.join("") === "ABC" && firstTextAt >= 0 && firstTextAt < 120,
-    "firstText=" + firstTextAt + "ms text=" + t40text.join(""));
+    "firstText=" + firstTextAt + "ms text=" + t40text.join(""),
+  );
 
   // T41: reasoning_content + content in the SAME delta — both must survive.
   sseScript = [{ delta: { reasoning_content: "想", content: "答" } }];
-  r = await wrapped.stream(svcAgent, mAgentRun, null, null, {}, oneMsg(mkAgentReq("conv-t41", "问")));
+  r = await wrapped.stream(
+    svcAgent,
+    mAgentRun,
+    null,
+    null,
+    {},
+    oneMsg(mkAgentReq("conv-t41", "问")),
+  );
   const t41 = (await collect(r.message)).map(agentInner);
-  const t41Think = t41.filter((x) => x && x.case === "thinkingDelta").map((x) => x.value.text).join("");
-  const t41Text = t41.filter((x) => x && x.case === "textDelta").map((x) => x.value.text).join("");
-  T("T41 reasoning+content同delta两者都保留",
+  const t41Think = t41
+    .filter((x) => x && x.case === "thinkingDelta")
+    .map((x) => x.value.text)
+    .join("");
+  const t41Text = t41
+    .filter((x) => x && x.case === "textDelta")
+    .map((x) => x.value.text)
+    .join("");
+  T(
+    "T41 reasoning+content同delta两者都保留",
     t41Think.indexOf("想") >= 0 && t41Text.indexOf("答") >= 0,
-    "think=" + t41Think + " text=" + t41Text);
+    "think=" + t41Think + " text=" + t41Text,
+  );
 
   // T42: same delta for Chat path — reasoning + content both survive.
   sseScript = [{ delta: { reasoning_content: "想", content: "答" } }];
   r = await wrapped.stream(svcChat, mUnified, null, null, {}, oneMsg(chatReq));
   const t42 = await collect(r.message);
-  T("T42 Chat reasoning+content同delta两者都保留",
-    t42[0] && t42[0].thinking instanceof ThinkingT && t42[0].thinking.text === "想" && t42[1] && t42[1].text === "答",
-    JSON.stringify(t42.map((m) => (m && m.thinking && m.thinking.text) ? "think:" + m.thinking.text : (m && m.text) || "?")));
+  T(
+    "T42 Chat reasoning+content同delta两者都保留",
+    t42[0] &&
+      t42[0].thinking instanceof ThinkingT &&
+      t42[0].thinking.text === "想" &&
+      t42[1] &&
+      t42[1].text === "答",
+    JSON.stringify(
+      t42.map((m) =>
+        m && m.thinking && m.thinking.text
+          ? "think:" + m.thinking.text
+          : (m && m.text) || "?",
+      ),
+    ),
+  );
 
   // T43: baked CFG is stale; live GET /config must win before the upstream call.
   const cfgSrv = http.createServer((req, res) => {
     if (req.method === "GET" && String(req.url || "").startsWith("/config")) {
       res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({
-        enabled: true,
-        baseUrl: `http://127.0.0.1:${PORT}/v1`,
-        apiKey: "sk-test-key",
-        defaultModel: "hot-swap-model",
-        modelMapping: { "*": "hot-swap-model" }
-      }));
+      res.end(
+        JSON.stringify({
+          enabled: true,
+          baseUrl: `http://127.0.0.1:${PORT}/v1`,
+          apiKey: "sk-test-key",
+          defaultModel: "hot-swap-model",
+          modelMapping: { "*": "hot-swap-model" },
+        }),
+      );
       return;
     }
     res.writeHead(204);
@@ -1265,16 +2579,23 @@ async function runTests(T) {
   await new Promise((rs) => cfgSrv.listen(0, "127.0.0.1", rs));
   const livePort = cfgSrv.address().port;
   const wrapLive = new Function(
-    runtimeSrc.replace(JSON.stringify(cfg), JSON.stringify({
-      ...cfg,
-      logPort: livePort,
-      defaultModel: "stale-model",
-      modelMapping: { "*": "stale-model" }
-    })) + "\n;return globalThis.__CURSOR_CM__.wrap;"
+    runtimeSrc.replace(
+      JSON.stringify(cfg),
+      JSON.stringify({
+        ...cfg,
+        logPort: livePort,
+        defaultModel: "stale-model",
+        modelMapping: { "*": "stale-model" },
+      }),
+    ) + "\n;return globalThis.__CURSOR_CM__.wrap;",
   )()(origTransport);
   sseScript = [{ delta: { content: "ok" } }];
   r = await wrapLive.stream(svcChat, mUnified, null, null, {}, oneMsg(chatReq));
   await collect(r.message);
   await new Promise((rs) => cfgSrv.close(rs));
-  T("T43 热切换从 Gateway 拉模型", lastRequestBody.model === "hot-swap-model", String(lastRequestBody.model));
+  T(
+    "T43 热切换从 Gateway 拉模型",
+    lastRequestBody.model === "hot-swap-model",
+    String(lastRequestBody.model),
+  );
 }
