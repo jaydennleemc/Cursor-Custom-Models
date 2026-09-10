@@ -1745,6 +1745,11 @@
     if (!next || typeof next !== "object") return;
     var prevModel = CFG.defaultModel;
     var prevUrl = CFG.baseUrl;
+    // Snapshot key fields before update to detect changes
+    var prevKeys = {};
+    for (var pi = 0; pi < LIVE_CFG_KEYS.length; pi++) {
+      prevKeys[LIVE_CFG_KEYS[pi]] = CFG[LIVE_CFG_KEYS[pi]];
+    }
     for (var i = 0; i < LIVE_CFG_KEYS.length; i++) {
       var k = LIVE_CFG_KEYS[i];
       if (next[k] !== undefined) CFG[k] = next[k];
@@ -1753,14 +1758,23 @@
       g.__CURSOR_CM__.config.baseUrl = CFG.baseUrl;
       g.__CURSOR_CM__.config.defaultModel = CFG.defaultModel;
     }
-    if (
+    // Detect any config change
+    var changed =
       String(prevModel) !== String(CFG.defaultModel) ||
-      String(prevUrl) !== String(CFG.baseUrl)
-    ) {
-      log("live config →", CFG.baseUrl, "| model:", CFG.defaultModel);
+      String(prevUrl) !== String(CFG.baseUrl);
+    if (!changed) {
+      for (var ci = 0; ci < LIVE_CFG_KEYS.length; ci++) {
+        var ck = LIVE_CFG_KEYS[ci];
+        if (String(prevKeys[ck]) !== String(CFG[ck])) {
+          changed = true;
+          break;
+        }
+      }
     }
-    // Always log full config on profile switch (config fetched from Gateway)
-    logConfig("profile switched →", CFG);
+    if (changed) {
+      log("live config →", CFG.baseUrl, "| model:", CFG.defaultModel);
+      logConfig("profile switched →", CFG);
+    }
   }
   function refreshCfg() {
     if (!_logPort) return Promise.resolve();
