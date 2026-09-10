@@ -62,9 +62,9 @@ export function ProfilesSection({
   const handleLoad = async (name: string) => {
     setBusy("load");
     try {
-      const loaded = await api.loadProfile(name);
+      const [loaded, state] = await api.loadProfile(name);
       syncConfig(loaded);
-      const state = await api.setActiveProfile(name);
+      setProfiles(state.profiles);
       setActiveProfile(state.activeProfile);
       dialogRef.current?.close();
     } catch {
@@ -72,6 +72,12 @@ export function ProfilesSection({
     } finally {
       setBusy(null);
     }
+  };
+
+  const startRename = (name: string) => {
+    setRenameError(null);
+    setEditingName(name);
+    setEditValue(name);
   };
 
   const cancelRename = () => {
@@ -193,7 +199,10 @@ export function ProfilesSection({
                           cancelRename();
                         }
                       }}
-                      onBlur={() => void handleRename(name)}
+                      onBlur={() => {
+                        // Only confirm on Enter; blur cancels to avoid accidental renaming.
+                        cancelRename();
+                      }}
                       autoFocus
                     />
                   ) : (
@@ -212,11 +221,7 @@ export function ProfilesSection({
                       className={cx(iconBtn, "hover:border-line hover:text-ink focus-visible:outline-none")}
                       aria-label={t("profileRename")}
                       disabled={busy !== null}
-                      onClick={() => {
-                        setRenameError(null);
-                        setEditingName(name);
-                        setEditValue(name);
-                      }}
+                      onClick={() => startRename(name)}
                     >
                       <svg
                         xmlns="http://www.w3.org/2000/svg"

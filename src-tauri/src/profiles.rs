@@ -1,4 +1,4 @@
-use crate::config::{config_dir_path, AppConfig};
+use crate::config::AppConfig;
 use crate::error::{AppError, Result};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -23,7 +23,7 @@ impl Default for ProfilesState {
 }
 
 fn profiles_file_path() -> Result<std::path::PathBuf> {
-    Ok(config_dir_path()?.join("profiles.json"))
+    Ok(crate::config::config_dir_path()?.join("profiles.json"))
 }
 
 pub fn load_profiles() -> Result<ProfilesState> {
@@ -57,13 +57,18 @@ pub fn save_profile(name: &str, config: &AppConfig) -> Result<ProfilesState> {
     Ok(state)
 }
 
-pub fn load_profile(name: &str) -> Result<AppConfig> {
-    let state = load_profiles()?;
-    state
+/// Load a profile by name. If found, it sets the active profile internally,
+/// so the caller does not need to call `set_active_profile` separately.
+pub fn load_and_activate(name: &str) -> Result<(AppConfig, ProfilesState)> {
+    let mut state = load_profiles()?;
+    let config = state
         .profiles
         .get(name)
         .cloned()
-        .ok_or_else(|| AppError::msg(format!("Profile '{name}' not found")))
+        .ok_or_else(|| AppError::msg(format!("Profile '{name}' not found")))?;
+    state.active_profile = Some(name.to_string());
+    save_profiles(&state)?;
+    Ok((config, state))
 }
 
 pub fn delete_profile(name: &str) -> Result<ProfilesState> {

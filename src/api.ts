@@ -22,8 +22,9 @@ export const testConnection = (config: AppConfig) =>
 export const listProfiles = () => invoke<ProfilesState>("list_profiles");
 export const saveProfile = (name: string, config: AppConfig) =>
   invoke<ProfilesState>("save_profile", { name, config });
+/** Load a profile and activate it in one call. Returns (config, profilesState). */
 export const loadProfile = (name: string) =>
-  invoke<AppConfig>("load_profile", { name });
+  invoke<[AppConfig, ProfilesState]>("load_profile", { name });
 export const deleteProfile = (name: string) =>
   invoke<ProfilesState>("delete_profile", { name });
 export const setActiveProfile = (name: string) =>

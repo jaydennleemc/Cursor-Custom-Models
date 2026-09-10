@@ -227,8 +227,8 @@ fn save_profile(name: String, config: AppConfig) -> Result<ProfilesState, String
 }
 
 #[tauri::command]
-fn load_profile(name: String) -> Result<AppConfig, String> {
-    Ok(profiles::load_profile(&name)?)
+fn load_profile(name: String) -> Result<(AppConfig, ProfilesState), String> {
+    Ok(profiles::load_and_activate(&name)?)
 }
 
 #[tauri::command]

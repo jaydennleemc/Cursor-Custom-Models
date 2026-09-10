@@ -24,7 +24,20 @@ pub fn restore_install(install: &CursorInstall, force: bool, log: &mut Vec<Strin
                 }
             }
             Ok(RestoreOne::NeedsForce) => {
-                log.push(format!("{leaf}  skipped — enable Force restore (Cursor updated this file)"));
+                // Two possible reasons for NeedsForce:
+                // 1. The file has never been patched (no marker)
+                // 2. The file was patched but Cursor updated it and the marker is gone
+                if crate::patch::bak_path(target).is_file()
+                    && bak_intact(&bak_path(target))
+                {
+                    log.push(format!(
+                        "{leaf}  not patched (backup exists but file is clean) — skipped"
+                    ));
+                } else {
+                    log.push(format!(
+                        "{leaf}  needs Force restore — Cursor may have updated this file"
+                    ));
+                }
             }
             Err(e) => {
                 failed += 1;
@@ -54,7 +67,19 @@ pub fn restore_install(install: &CursorInstall, force: bool, log: &mut Vec<Strin
         )));
     }
     if !any {
-        return Err(AppError::msg("Nothing to restore (Cursor may not be patched yet)"));
+        // Differentiate between "never patched" and "already clean"
+        let never_patched = install
+            .targets
+            .iter()
+            .all(|p| !crate::patch::bak_path(p).is_file());
+        if never_patched {
+            return Err(AppError::msg(
+                "Nothing to restore — Cursor has not been patched yet. Run Start first.",
+            ));
+        }
+        return Err(AppError::msg(
+            "Nothing to restore — files are already clean or backup is missing.",
+        ));
     }
     Ok(())
 }

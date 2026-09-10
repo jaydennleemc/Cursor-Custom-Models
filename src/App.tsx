@@ -3,8 +3,6 @@ import { Settings } from "./components/Settings";
 import { useGateway, type ReadyGateway } from "./hooks/useGateway";
 import { rail, shell, stage } from "./ui";
 
-const APP_VERSION = "1.0.8";
-
 export default function App() {
   const gw = useGateway();
 
@@ -17,7 +15,7 @@ export default function App() {
             <h1 className="m-0 flex items-baseline gap-2 text-lg font-bold leading-tight tracking-[-0.03em]">
               Cursor Gateway{" "}
               <span className="font-mono text-[11px] font-medium tracking-[0.04em] text-muted">
-                v{APP_VERSION}
+                v{__APP_VERSION__}
               </span>
             </h1>
             <p className="m-0 text-[13px] leading-snug text-muted">{gw.t("loading")}</p>
@@ -32,7 +30,7 @@ export default function App() {
   return (
     <div className={shell}>
       <div className="noise" />
-      <Rail gw={ready} version={APP_VERSION} />
+      <Rail gw={ready} version={__APP_VERSION__} />
       <Settings gw={ready} />
     </div>
   );

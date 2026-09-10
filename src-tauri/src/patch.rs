@@ -2,10 +2,13 @@ use crate::checksum;
 use crate::cursor::CursorInstall;
 use crate::error::{AppError, Result};
 use regex::Regex;
+use std::collections::HashMap;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::sync::OnceLock;
+use std::time::Instant;
 
 pub const MARKER: &str = "__CURSOR_CM__";
 const PLACEHOLDER: &str = "__CM_CONFIG_PLACEHOLDER__";
@@ -26,7 +29,14 @@ const CONFIRMED_FREE_RE: &str = r#"(\{membershipType:[A-Za-z_$][\w$]*,hasResolve
 /// Full-picker gate: false while a free user is still "potentially locked".
 const PICKER_ALLOW_RE: &str = r#"(\{isAuthSettling:[A-Za-z_$][\w$]*,isPotentiallyFreeUserModelPickerLocked:[A-Za-z_$][\w$]*,isFreeUserMembershipConfirmedToAllowFullPicker:[A-Za-z_$][\w$]*,isRestrictedModelPicker:[A-Za-z_$][\w$]*\}\)\{)return![A-Za-z_$][\w$]*&&![A-Za-z_$][\w$]*&&\(![A-Za-z_$][\w$]*\|\|[A-Za-z_$][\w$]*\)\}"#;
 /// Policy mapper: eligible free users get `{kind:"locked"}` instead of the list.
-const LOCKED_PICKER_KIND_RE: &str = r#"[A-Za-z_$][\w$]*==="locked_picker"\?\{kind:"locked",onUpgradeClick:[A-Za-z_$][\w$]*\}:[A-Za-z_$][\w$]*==="grayed_models"\?\{kind:"models-disabled",onUpgradeClick:[A-Za-z_$][\w$]*\}:\{kind:"full"\}"#;
+const LOCKED_PICKER_KIND_RE: &str = r#"[A-Za-z_$][\w$]*==="locked_picker"\{kind:"locked",onUpgradeClick:[A-Za-z_$][\w$]*\}:[A-Za-z_$][\w$]*==="grayed_models"\{kind:"models-disabled",onUpgradeClick:[A-Za-z_$][\w$]*\}:\{kind:"full"\}"#;
+
+fn patched_cache() -> &'static Mutex<HashMap<PathBuf, (bool, Instant)>> {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, (bool, Instant)>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+const CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(2);
 
 pub fn bak_path(target: &Path) -> PathBuf {
     let mut s = target.as_os_str().to_os_string();
@@ -79,7 +89,28 @@ fn memmem(hay: &[u8], needle: &[u8]) -> bool {
     hay.windows(needle.len()).any(|w| w == needle)
 }
 
+/// Check whether a file has been patched. Uses an in-memory cache (2s TTL)
+/// so repeated UI status polls do not re-read the tail of large workbench files.
 pub fn file_is_patched(path: &Path) -> bool {
+    // Check cache first
+    if let Ok(cache) = patched_cache().lock() {
+        if let Some((patched, at)) = cache.get(path) {
+            if at.elapsed() < CACHE_TTL {
+                return *patched;
+            }
+        }
+    }
+
+    let patched = file_is_patched_uncached(path);
+
+    // Store in cache
+    if let Ok(mut cache) = patched_cache().lock() {
+        cache.insert(path.to_path_buf(), (patched, Instant::now()));
+    }
+    patched
+}
+
+fn file_is_patched_uncached(path: &Path) -> bool {
     use std::io::{Read, Seek, SeekFrom};
     let Ok(mut file) = fs::File::open(path) else {
         return false;
@@ -97,6 +128,13 @@ pub fn file_is_patched(path: &Path) -> bool {
         return false;
     }
     String::from_utf8_lossy(&buf).contains(MARKER)
+}
+
+/// Invalidate the patched cache for a specific path (after write/modify).
+pub fn invalidate_patched_cache(path: &Path) {
+    if let Ok(mut cache) = patched_cache().lock() {
+        cache.remove(path);
+    }
 }
 
 pub fn inject_runtime(config_json: &str) -> Result<String> {
@@ -290,6 +328,8 @@ fn patch_one(target: &Path, runtime: &str) -> Result<()> {
     }
 
     fs::write(target, format!("{}\n{runtime}\n", applied.content))?;
+    // Invalidate cache after writing
+    invalidate_patched_cache(target);
     Ok(())
 }
 
@@ -330,6 +370,7 @@ fn replace_runtime_tail(path: &Path, runtime: &str) -> Result<bool> {
     file.write_all(b"\n")?;
     file.write_all(runtime.as_bytes())?;
     file.write_all(b"\n")?;
+    invalidate_patched_cache(path);
     Ok(true)
 }
 

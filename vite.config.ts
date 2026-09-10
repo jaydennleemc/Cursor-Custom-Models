@@ -2,11 +2,15 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { env } from "node:process";
+import { readFileSync } from "node:fs";
 
-const host = env.TAURI_DEV_HOST;
+const pkg = JSON.parse(readFileSync("package.json", "utf-8"));
 
 // https://vite.dev/config/
 export default defineConfig(() => ({
+  define: {
+    __APP_VERSION__: JSON.stringify(pkg.version),
+  },
   plugins: [react(), tailwindcss()],
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`

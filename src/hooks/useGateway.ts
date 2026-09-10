@@ -42,6 +42,8 @@ export type Gateway = {
   log: string;
   logRef: RefObject<HTMLPreElement | null>;
   patchedCount: number;
+  /** True when UI values differ from the last persisted config. */
+  isDirty: boolean;
   applyModel: (model: string) => void;
   syncConfig: (config: AppConfig) => void;
   commitConfig: (config: AppConfig) => void;
@@ -72,6 +74,8 @@ export function useGateway(): Gateway {
   const [banner, setBanner] = useState<Banner | null>(null);
   const [log, setLog] = useState("");
   const logRef = useRef<HTMLPreElement>(null);
+  // Track the last persisted config snapshot so we can compute isDirty
+  const [persistedConfig, setPersistedConfig] = useState<AppConfig | null>(null);
 
   useEffect(() => {
     const el = logRef.current;
@@ -86,6 +90,7 @@ export function useGateway(): Gateway {
     const [nextStatus, nextConfig] = await Promise.all([api.getStatus(), api.getConfig()]);
     setStatus(nextStatus);
     setConfig(nextConfig);
+    setPersistedConfig(nextConfig);
     const matched = matchProvider(nextConfig.baseUrl);
     setProviderId(matched.id);
     setModelCustom(!matched.models.includes(nextConfig.defaultModel));
@@ -103,6 +108,18 @@ export function useGateway(): Gateway {
     () => status?.targets.filter((item) => item.patched).length ?? 0,
     [status],
   );
+
+  /** True when the current UI-edited config differs from the last persisted one. */
+  const isDirty = useMemo(() => {
+    if (!persistedConfig || !config) return false;
+    try {
+      const assembled = assembleConfig();
+      return JSON.stringify(assembled) !== JSON.stringify(persistedConfig);
+    } catch {
+      return false;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [config, mapping, headersText, persistedConfig]);
 
   function writeLog(title: string, lines: string[]) {
     const block = [`${clock(locale)}  ${title}`, ...lines.filter((line) => line.trim())].join("\n");
@@ -142,13 +159,18 @@ export function useGateway(): Gateway {
     setHeadersText(JSON.stringify(cfg.extraHeaders ?? {}, null, 2));
   }
 
-  function commitConfig(cfg: AppConfig) {
+  async function commitConfig(cfg: AppConfig) {
     hydrateConfig(cfg);
-    void api.saveConfig(cfg).catch(() => { /* keep UI; next Save retries */ });
+    try {
+      await api.saveConfig(cfg);
+      setPersistedConfig(cfg);
+    } catch {
+      // keep UI; next Save retries
+    }
   }
 
   function syncConfig(cfg: AppConfig) {
-    commitConfig(cfg);
+    void commitConfig(cfg);
   }
 
   function applyModel(model: string) {
@@ -177,6 +199,7 @@ export function useGateway(): Gateway {
       const next = assembleConfig();
       const path = await api.saveConfig(next);
       setConfig(next);
+      setPersistedConfig(next);
       setBanner({ kind: "ok", text: t("saved", { path }) });
     });
   }
@@ -277,6 +300,7 @@ export function useGateway(): Gateway {
     log,
     logRef,
     patchedCount,
+    isDirty,
     applyModel,
     syncConfig,
     commitConfig,
