@@ -1723,6 +1723,24 @@
     "agentContext",
     "debugDump",
   ];
+  function logConfig(label, cfg) {
+    try {
+      log(
+        label + " config:",
+        "baseUrl=" + (cfg.baseUrl || ""),
+        "| model=" + (cfg.defaultModel || ""),
+        "| maxTokens=" + (cfg.maxTokens || 16384),
+        "| temperature=" +
+          (cfg.temperature == null ? "default" : cfg.temperature),
+        "| tools=" + (cfg.agentTools === false ? "off" : "on"),
+        "| intercept=" + (cfg.interceptMethods || []).length + " methods",
+        "| sendReasoning=" + (cfg.sendReasoningAsText ? "on" : "off"),
+        "| blockUsageGate=" + (cfg.blockUsageGate === false ? "off" : "on"),
+      );
+    } catch (e) {
+      /* noop */
+    }
+  }
   function applyLiveCfg(next) {
     if (!next || typeof next !== "object") return;
     var prevModel = CFG.defaultModel;
@@ -1741,6 +1759,8 @@
     ) {
       log("live config →", CFG.baseUrl, "| model:", CFG.defaultModel);
     }
+    // Always log full config on profile switch (config fetched from Gateway)
+    logConfig("profile switched →", CFG);
   }
   function refreshCfg() {
     if (!_logPort) return Promise.resolve();
@@ -3145,4 +3165,5 @@
     "| targets:",
     (CFG.interceptMethods || []).length,
   );
+  logConfig("startup", CFG);
 })();
