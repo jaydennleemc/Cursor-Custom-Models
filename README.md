@@ -52,6 +52,8 @@ Config lives on disk, not in Cursor’s settings:
 - macOS: `~/Library/Application Support/cursor-custom-model/`
 - Windows: `%APPDATA%\cursor-custom-model\`
 
+Patch backups (`*.cm-bak`) live in that folder’s `backups/` directory, **not** inside Cursor.app. Leaving them in the app bundle makes macOS report Cursor as damaged.
+
 ## Use
 
 1. Install Cursor Gateway (`.dmg` on macOS, NSIS/MSI on Windows). On macOS, if Gatekeeper blocks the first launch: right-click the app → **Open**. If it says the app is damaged:

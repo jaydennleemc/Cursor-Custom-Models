@@ -105,7 +105,7 @@ pub fn target_statuses(install: &CursorInstall) -> Vec<TargetStatus> {
                 .unwrap_or_else(|| rel.to_string());
             let exists = path.is_file();
             let patched = exists && crate::patch::file_is_patched(&path);
-            let backup = crate::patch::bak_path(&path).is_file();
+            let backup = crate::patch::existing_bak(&path).is_some();
             TargetStatus {
                 name,
                 path: path.display().to_string(),

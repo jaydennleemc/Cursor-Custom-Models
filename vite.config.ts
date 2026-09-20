@@ -5,6 +5,7 @@ import { env } from "node:process";
 import { readFileSync } from "node:fs";
 
 const pkg = JSON.parse(readFileSync("package.json", "utf-8"));
+const host = env.TAURI_DEV_HOST || undefined;
 
 // https://vite.dev/config/
 export default defineConfig(() => ({

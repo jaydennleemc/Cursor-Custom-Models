@@ -1,7 +1,7 @@
 use crate::checksum;
 use crate::cursor::CursorInstall;
 use crate::error::{AppError, Result};
-use crate::patch::{bak_intact, bak_path};
+use crate::patch::{bak_intact, bak_path, existing_bak, remove_bundle_sidecar};
 use std::fs;
 
 pub fn restore_install(install: &CursorInstall, force: bool, log: &mut Vec<String>) -> Result<()> {
@@ -27,8 +27,7 @@ pub fn restore_install(install: &CursorInstall, force: bool, log: &mut Vec<Strin
                 // Two possible reasons for NeedsForce:
                 // 1. The file has never been patched (no marker)
                 // 2. The file was patched but Cursor updated it and the marker is gone
-                if crate::patch::bak_path(target).is_file()
-                    && bak_intact(&bak_path(target))
+                if existing_bak(target).map(|p| bak_intact(&p)).unwrap_or(false)
                 {
                     log.push(format!(
                         "{leaf}  not patched (backup exists but file is clean) — skipped"
@@ -56,6 +55,10 @@ pub fn restore_install(install: &CursorInstall, force: bool, log: &mut Vec<Strin
             log.push(format!("product.json  failed — {e}"));
         }
     }
+    for target in &install.targets {
+        remove_bundle_sidecar(target);
+    }
+    remove_bundle_sidecar(&install.product_json);
     let still_patched = install
         .targets
         .iter()
@@ -71,7 +74,7 @@ pub fn restore_install(install: &CursorInstall, force: bool, log: &mut Vec<Strin
         let never_patched = install
             .targets
             .iter()
-            .all(|p| !crate::patch::bak_path(p).is_file());
+            .all(|p| existing_bak(p).is_none());
         if never_patched {
             return Err(AppError::msg(
                 "Nothing to restore — Cursor has not been patched yet. Run Start first.",
@@ -91,10 +94,9 @@ enum RestoreOne {
 }
 
 fn restore_one(target: &std::path::Path, force: bool) -> Result<RestoreOne> {
-    let bak = bak_path(target);
-    if !bak.is_file() {
+    let Some(bak) = existing_bak(target) else {
         return Ok(RestoreOne::NoBackup);
-    }
+    };
     let patched = crate::patch::file_is_patched(target);
     if !patched && !force {
         return Ok(RestoreOne::NeedsForce);
@@ -106,6 +108,7 @@ fn restore_one(target: &std::path::Path, force: bool) -> Result<RestoreOne> {
         )));
     }
     fs::copy(&bak, target)?;
+    crate::patch::invalidate_patched_cache(target);
     let len = fs::metadata(target).map(|m| m.len()).unwrap_or(0);
     if len < 1_000_000 || crate::patch::file_is_patched(target) {
         return Err(AppError::msg("restore verification failed"));

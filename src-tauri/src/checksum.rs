@@ -15,13 +15,11 @@ pub fn update_product_json(product_json: &Path, out_dir: &Path, targets: &[std::
     if !product_json.is_file() {
         return Ok(false);
     }
-    let bak = {
-        let mut p = product_json.as_os_str().to_os_string();
-        p.push(".cm-bak");
-        std::path::PathBuf::from(p)
-    };
+    let bak = crate::patch::bak_path(product_json);
     if !bak.exists() {
+        crate::patch::ensure_bak_parent(&bak)?;
         fs::copy(product_json, &bak)?;
+        crate::patch::remove_bundle_sidecar(product_json);
     }
 
     let mut text = fs::read_to_string(product_json)?;
@@ -50,19 +48,15 @@ pub fn update_product_json(product_json: &Path, out_dir: &Path, targets: &[std::
 }
 
 pub fn restore_product_json(product_json: &Path) -> Result<bool> {
-    let bak = {
-        let mut p = product_json.as_os_str().to_os_string();
-        p.push(".cm-bak");
-        std::path::PathBuf::from(p)
-    };
-    if !bak.is_file() {
+    let Some(bak) = crate::patch::existing_bak(product_json) else {
         return Ok(false);
-    }
+    };
     let probe = fs::read_to_string(&bak)?;
     if serde_json::from_str::<serde_json::Value>(&probe).is_err() || !probe.contains("checksums") {
         return Ok(false);
     }
     fs::copy(&bak, product_json)?;
+    crate::patch::remove_bundle_sidecar(product_json);
     Ok(true)
 }
 

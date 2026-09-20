@@ -6,6 +6,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "macos")]
+use std::process::Command;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::time::Instant;
@@ -18,7 +20,10 @@ const MIN_BAK_BYTES: u64 = 1_000_000;
 /// the whole workbench bundle (tens of MB).
 const INJECT_HEAD: &[u8] = b" * Cursor Custom Models Runtime v";
 
-const TRANSPORT_RE: &str = r#"async transport\(\)\{try\{return await ([A-Za-z_$][\w$]*)\(this\._provider,AbortSignal\.timeout\(([A-Za-z_$][\w$]*)\)\)\}catch\{throw new Error\("No Connect transport provider registered\."\)\}\}"#;
+/// Matches `async transport(){try{return await FN(this._provider,AbortSignal.timeout(TO))}catch{…}}`
+/// on both the pre-3.21 form (bare `throw new Error(...)`) and 3.21.13+ (structuredLog
+/// warn then Error). Only the try-return is rewritten so the catch body is preserved.
+const TRANSPORT_RE: &str = r#"(async transport\(\)\{try\{)return await ([A-Za-z_$][\w$]*)\(this\._provider,AbortSignal\.timeout\(([A-Za-z_$][\w$]*)\)\)(\}catch\{)"#;
 const EXT_RE: &str = r#"registerConnectTransportProvider\(([A-Za-z_$][\w$]*)\)\{this\.([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*),this\._proxy\.\$registerAiConnectTransportProvider\(\)\}"#;
 const ANCHOR_DESKTOP: &str = r#"async transport(){try{return await gb(this._provider,AbortSignal.timeout(D3u))}catch{throw new Error("No Connect transport provider registered.")}}"#;
 const ANCHOR_DESKTOP_REP: &str = r#"async transport(){try{const __cmT=await gb(this._provider,AbortSignal.timeout(D3u));try{return(globalThis.__CURSOR_CM__&&globalThis.__CURSOR_CM__.wrap)?globalThis.__CURSOR_CM__.wrap(__cmT):__cmT}catch(__cmE){return __cmT}}catch{throw new Error("No Connect transport provider registered.")}}"#;
@@ -29,7 +34,11 @@ const CONFIRMED_FREE_RE: &str = r#"(\{membershipType:[A-Za-z_$][\w$]*,hasResolve
 /// Full-picker gate: false while a free user is still "potentially locked".
 const PICKER_ALLOW_RE: &str = r#"(\{isAuthSettling:[A-Za-z_$][\w$]*,isPotentiallyFreeUserModelPickerLocked:[A-Za-z_$][\w$]*,isFreeUserMembershipConfirmedToAllowFullPicker:[A-Za-z_$][\w$]*,isRestrictedModelPicker:[A-Za-z_$][\w$]*\}\)\{)return![A-Za-z_$][\w$]*&&![A-Za-z_$][\w$]*&&\(![A-Za-z_$][\w$]*\|\|[A-Za-z_$][\w$]*\)\}"#;
 /// Policy mapper: eligible free users get `{kind:"locked"}` instead of the list.
-const LOCKED_PICKER_KIND_RE: &str = r#"[A-Za-z_$][\w$]*==="locked_picker"\{kind:"locked",onUpgradeClick:[A-Za-z_$][\w$]*\}:[A-Za-z_$][\w$]*==="grayed_models"\{kind:"models-disabled",onUpgradeClick:[A-Za-z_$][\w$]*\}:\{kind:"full"\}"#;
+const LOCKED_PICKER_KIND_RE: &str = r#"[A-Za-z_$][\w$]*==="locked_picker"\?\{kind:"locked",onUpgradeClick:[A-Za-z_$][\w$]*\}:[A-Za-z_$][\w$]*==="grayed_models"\?\{kind:"models-disabled",onUpgradeClick:[A-Za-z_$][\w$]*\}:\{kind:"full"\}"#;
+/// Cursor 3.21+ Statsig `cursor_agent_host`: Agent/Run goes through
+/// `cursor-agent-host` with its own Connect transport, skipping our wrap.
+/// Force the legacy path so Chat/Agent still hit the injected runtime.
+const AGENT_HOST_RE: &str = r#"isCursorAgentHostEnabled\(\)\{return this\._agentHostEnabled\}"#;
 
 fn patched_cache() -> &'static Mutex<HashMap<PathBuf, (bool, Instant)>> {
     static CACHE: OnceLock<Mutex<HashMap<PathBuf, (bool, Instant)>>> = OnceLock::new();
@@ -38,10 +47,61 @@ fn patched_cache() -> &'static Mutex<HashMap<PathBuf, (bool, Instant)>> {
 
 const CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(2);
 
-pub fn bak_path(target: &Path) -> PathBuf {
+fn sibling_bak(target: &Path) -> PathBuf {
     let mut s = target.as_os_str().to_os_string();
     s.push(".cm-bak");
     PathBuf::from(s)
+}
+
+fn is_inside_app_bundle(path: &Path) -> bool {
+    path.components()
+        .any(|c| c.as_os_str().to_string_lossy().ends_with(".app"))
+}
+
+fn external_backup_dir() -> Option<PathBuf> {
+    crate::config::config_dir_path().ok().map(|p| p.join("backups"))
+}
+
+/// Backups must not live inside Cursor.app — extra files invalidate the
+/// sealed signature and macOS reports the app as damaged.
+pub fn bak_path(target: &Path) -> PathBuf {
+    if is_inside_app_bundle(target) {
+        if let Some(dir) = external_backup_dir() {
+            if let Some(name) = target.file_name() {
+                return dir.join(format!("{}.cm-bak", name.to_string_lossy()));
+            }
+        }
+    }
+    sibling_bak(target)
+}
+
+/// Prefer the external backup; fall back to a leftover sidecar next to the
+/// target (pre-1.0.9 Start wrote those inside the bundle).
+pub fn existing_bak(target: &Path) -> Option<PathBuf> {
+    let preferred = bak_path(target);
+    if preferred.is_file() {
+        return Some(preferred);
+    }
+    let sibling = sibling_bak(target);
+    if sibling.is_file() {
+        return Some(sibling);
+    }
+    None
+}
+
+pub fn ensure_bak_parent(bak: &Path) -> Result<()> {
+    if let Some(parent) = bak.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    Ok(())
+}
+
+/// Delete a `.cm-bak` that was left beside a signed bundle file.
+pub fn remove_bundle_sidecar(target: &Path) {
+    let sibling = sibling_bak(target);
+    if is_inside_app_bundle(&sibling) && sibling.is_file() {
+        let _ = fs::remove_file(&sibling);
+    }
 }
 
 pub fn bak_intact(path: &Path) -> bool {
@@ -176,6 +236,11 @@ fn locked_picker_kind_re() -> &'static Regex {
     RE.get_or_init(|| Regex::new(LOCKED_PICKER_KIND_RE).expect("locked-picker regex"))
 }
 
+fn agent_host_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(AGENT_HOST_RE).expect("agent-host regex"))
+}
+
 /// Disable Cursor's free-plan model-picker lock (stable property names, minified locals).
 fn unlock_model_picker(content: &str) -> (String, bool) {
     let mut text = content.to_string();
@@ -227,9 +292,11 @@ pub fn apply_anchors(content: &str) -> AnchorResult {
 
     let t_out = transport_re().replace_all(&text, |caps: &regex::Captures| {
         format!(
-            "async transport(){{try{{const __cmT=await {}(this._provider,AbortSignal.timeout({}));try{{return(globalThis.__CURSOR_CM__&&globalThis.__CURSOR_CM__.wrap)?globalThis.__CURSOR_CM__.wrap(__cmT):__cmT}}catch(__cmE){{return __cmT}}}}catch{{throw new Error(\"No Connect transport provider registered.\")}}}}",
+            "{}const __cmT=await {}(this._provider,AbortSignal.timeout({}));try{{return(globalThis.__CURSOR_CM__&&globalThis.__CURSOR_CM__.wrap)?globalThis.__CURSOR_CM__.wrap(__cmT):__cmT}}catch(__cmE){{return __cmT}}{}",
             &caps[1],
-            &caps[2]
+            &caps[2],
+            &caps[3],
+            &caps[4]
         )
     });
     if t_out.as_ref() != text.as_str() {
@@ -247,6 +314,13 @@ pub fn apply_anchors(content: &str) -> AnchorResult {
         text = unlocked;
         patched = true;
         detail.push_str("model-picker; ");
+    }
+
+    let host_out = agent_host_re().replace_all(&text, "isCursorAgentHostEnabled(){return!1}");
+    if host_out.as_ref() != text.as_str() {
+        text = host_out.into_owned();
+        patched = true;
+        detail.push_str("agent-host; ");
     }
 
     AnchorResult {
@@ -281,7 +355,55 @@ pub fn patch_install(install: &CursorInstall, injected_json: &str, log: &mut Vec
         Ok(false) => log.push("product.json  unchanged".into()),
         Err(e) => log.push(format!("product.json  failed — {e}")),
     }
+    for target in &install.targets {
+        remove_bundle_sidecar(target);
+    }
+    remove_bundle_sidecar(&install.product_json);
+    resign_macos_app(install, log);
     Ok(())
+}
+
+/// `/…/Cursor.app/Contents/Resources/app` → `/…/Cursor.app`
+fn cursor_app_bundle(install: &crate::cursor::CursorInstall) -> Option<PathBuf> {
+    let app = install.root.parent()?.parent()?.parent()?;
+    if app.extension().is_some_and(|e| e == "app") {
+        Some(app.to_path_buf())
+    } else {
+        None
+    }
+}
+
+/// Patching JS inside the bundle breaks the sealed Developer ID signature.
+/// Ad-hoc re-sign so Gatekeeper does not report Cursor as damaged.
+fn resign_macos_app(install: &crate::cursor::CursorInstall, log: &mut Vec<String>) {
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (install, log);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let Some(app) = cursor_app_bundle(install) else {
+            return;
+        };
+        let path = app.to_string_lossy().into_owned();
+        let _ = Command::new("xattr").args(["-cr", &path]).status();
+        match Command::new("codesign")
+            .args(["--force", "--deep", "--sign", "-", &path])
+            .output()
+        {
+            Ok(out) if out.status.success() => {
+                log.push("macos  ad-hoc re-signed Cursor.app".into());
+            }
+            Ok(out) => {
+                let err = String::from_utf8_lossy(&out.stderr);
+                log.push(format!(
+                    "macos  codesign failed — {}",
+                    err.trim().chars().take(200).collect::<String>()
+                ));
+            }
+            Err(e) => log.push(format!("macos  codesign error — {e}")),
+        }
+    }
 }
 
 fn file_leaf(path: &Path) -> String {
@@ -293,16 +415,20 @@ fn file_leaf(path: &Path) -> String {
 fn patch_one(target: &Path, runtime: &str) -> Result<()> {
     if file_is_patched(target) {
         let content = fs::read_to_string(target)?;
-        let (next, unlocked) = unlock_model_picker(&content);
-        if unlocked {
-            fs::write(target, next)?;
+        // Re-apply anchors so a Cursor update that we already "patched"
+        // via model-picker-only (3.21.13+ transport() shape) still gets
+        // the Connect wrap on a later Start.
+        let applied = apply_anchors(&content);
+        if applied.patched {
+            fs::write(target, &applied.content)?;
+            invalidate_patched_cache(target);
         }
         if replace_runtime_tail(target, runtime)? {
             return Ok(());
         }
     }
 
-    let bak = bak_path(target);
+    let bak = existing_bak(target).unwrap_or_else(|| bak_path(target));
     let mut content = fs::read_to_string(target)?;
     if content.contains(MARKER) {
         if !bak_intact(&bak) {
@@ -324,7 +450,9 @@ fn patch_one(target: &Path, runtime: &str) -> Result<()> {
     }
 
     if !content.contains(MARKER) {
+        ensure_bak_parent(&bak)?;
         fs::write(&bak, &content)?;
+        remove_bundle_sidecar(target);
     }
 
     fs::write(target, format!("{}\n{runtime}\n", applied.content))?;
@@ -379,6 +507,40 @@ mod tests {
     use super::*;
 
     #[test]
+    fn cursor_321_agent_host_gate_is_forced_off() {
+        let src = r#"isCursorAgentHostEnabled(){return this._agentHostEnabled}},B8i=__decorate("#;
+        let out = apply_anchors(src);
+        assert!(out.patched);
+        assert!(out.detail.contains("agent-host"));
+        assert!(out.content.contains("isCursorAgentHostEnabled(){return!1}"));
+        assert!(!out.content.contains("return this._agentHostEnabled"));
+        let again = apply_anchors(&out.content);
+        assert!(!again.detail.contains("agent-host"));
+    }
+
+    #[test]
+    fn bak_path_stays_beside_file_outside_app_bundle() {
+        let target = std::env::temp_dir().join("workbench.desktop.main.js");
+        let bak = bak_path(&target);
+        assert_eq!(bak, sibling_bak(&target));
+    }
+
+    #[test]
+    fn bak_path_leaves_app_bundle() {
+        let target = PathBuf::from(
+            "/Applications/Cursor.app/Contents/Resources/app/out/vs/workbench/workbench.desktop.main.js",
+        );
+        let bak = bak_path(&target);
+        assert!(
+            !is_inside_app_bundle(&bak),
+            "backup must not sit inside Cursor.app: {}",
+            bak.display()
+        );
+        assert!(bak.ends_with("workbench.desktop.main.js.cm-bak"));
+        assert!(bak.to_string_lossy().contains("cursor-custom-model"));
+    }
+
+    #[test]
     fn runtime_has_placeholder() {
         assert!(RUNTIME.contains(PLACEHOLDER));
         assert!(RUNTIME.contains(MARKER));
@@ -409,6 +571,23 @@ mod tests {
         assert!(out.patched);
         assert!(out.content.contains("await xY9("));
         assert!(out.content.contains("timeout(Zz8)"));
+    }
+
+    #[test]
+    fn transport_anchor_wraps_32113_structured_log_catch() {
+        // Cursor 3.21.13+ logs a wait timeout before throwing.
+        let src = r#"async transport(){try{return await cv(this._provider,AbortSignal.timeout(RHs))}catch{throw this.structuredLogService.warn("transport","Connect transport did not register within the wait budget",{subkey:"connect_transport_wait_timeout",waitedMs:String(RHs),registrations:String(this._transportGeneration)}),new Error("No Connect transport provider registered.")}}"#;
+        let out = apply_anchors(src);
+        assert!(out.patched);
+        assert!(out.detail.contains("transport"));
+        assert!(out.content.contains("__CURSOR_CM__.wrap"));
+        assert!(out.content.contains("await cv("));
+        assert!(out.content.contains("timeout(RHs)"));
+        assert!(out.content.contains("connect_transport_wait_timeout"));
+        assert!(!out.content.contains("return await cv("));
+        let again = apply_anchors(&out.content);
+        assert!(!again.detail.contains("transport"));
+        assert_eq!(again.content, out.content);
     }
 
     #[test]

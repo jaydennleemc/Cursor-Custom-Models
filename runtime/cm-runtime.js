@@ -1,11 +1,17 @@
 /* ============================================================
- * Cursor Custom Models Runtime v1.6.12
+ * Cursor Custom Models Runtime v1.6.14
  * Injected at the end of three files (same code, separate processes):
  *   workbench.desktop.main.js / workbench.glass.main.js (renderer)
  *   extensionHostProcess.js (extension host — where HTTP actually terminates)
  * Intercepts the ConnectRPC transport and forwards Chat / Cmd+K / Agent
  * requests to the user-configured OpenAI-compatible API.
  *
+ * v1.6.14: GetCurrentPeriodUsage returns enabled=false + a dummy planUsage
+ *          (0 used / huge limit) so the "You've hit your usage limit" card
+ *          cannot compute 100%. Also stub GetPlanInfo (no nextUpgrade).
+ * v1.6.13: Bypass GetCurrentPeriodUsage (server display_message is the
+ *          "Get Cursor Pro for more Agent usage…" tray). Cursor 3.21.13+
+ *          changed transport() catch; patch.rs wraps that shape too.
  * v1.6.12: Add edit_file tool (search/replace) so models can modify files
  *          without full-content write_file. Prevents truncation when model
  *          only sends the changed portion. Executes locally via require('fs').
@@ -167,26 +173,65 @@
    * 免费额度耗尽时 DashboardService/GetUsageLimitStatusAndActiveGrants 返回
    * HARD_BLOCK 状态(resetAtMs), 客户端在发送前直接锁死 composer 并显示
    * "You're paused until your usage resets" — 请求根本不会进入聊天拦截通道。
-   * 这里返回空响应(usage_limit_policy_status 缺省)解除门禁。
+   * GetCurrentPeriodUsage.display_message 是 3.21+ 的 Pro 升级文案
+   * ("Get Cursor Pro for more Agent usage…")；空响应不够 — Cursor 用
+   * planUsage 算出 100% 仍会画 "You've hit your usage limit"。
    * 由 config.blockUsageGate 控制(默认开启)。 */
   var GATE_UNARYS = {
     "aiserver.v1.DashboardService/GetUsageLimitStatusAndActiveGrants": 1,
     "aiserver.v1.DashboardService/GetUsageLimitPolicyStatus": 1,
+    // 3.21+: "You've hit your usage limit" / display_message / nextUpgrade CTA
+    "aiserver.v1.DashboardService/GetCurrentPeriodUsage": 1,
+    "aiserver.v1.DashboardService/GetPlanInfo": 1,
   };
   function isUsageGate(service, method) {
     if (CFG.blockUsageGate === false) return false;
     return Object.hasOwn(GATE_UNARYS, service.typeName + "/" + method.name);
   }
+  function gatePartial(method) {
+    var name = method && method.name;
+    if (name === "GetCurrentPeriodUsage") {
+      // Cursor shows the composer card when used/limit >= 100% and copies
+      // display_message from the server ("Get Cursor Pro for more Agent…").
+      // enabled=false clears the copy; a huge limit keeps the bar off.
+      return {
+        enabled: false,
+        displayMessage: "",
+        planUsage: {
+          totalSpend: 0,
+          includedSpend: 0,
+          bonusSpend: 0,
+          limit: 99999900,
+          totalPercentUsed: 0,
+        },
+      };
+    }
+    if (name === "GetPlanInfo") {
+      return {
+        planInfo: {
+          planName: "pro",
+          includedAmountCents: 99999900,
+        },
+      };
+    }
+    return {};
+  }
   function handleGateUnary(service, method) {
     var key = service.typeName + "/" + method.name;
     log("usage-gate bypass:", key);
+    var msg;
+    try {
+      msg = new method.O(gatePartial(method));
+    } catch (eGateMsg) {
+      msg = new method.O({});
+    }
     return Promise.resolve({
       stream: false,
       service: service,
       method: method,
       header: new Headers(),
       trailer: new Headers(),
-      message: new method.O({}), // 空响应: isInSlowPool 缺省 false, 无 resetAtMs
+      message: msg,
     });
   }
 
@@ -3164,7 +3209,7 @@
 
   g.__CURSOR_CM__ = {
     active: true,
-    version: "1.6.12",
+    version: "1.6.14",
     stats: stats,
     config: {
       baseUrl: CFG.baseUrl,

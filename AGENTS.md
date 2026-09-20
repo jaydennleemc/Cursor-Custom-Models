@@ -25,7 +25,7 @@ The injected runtime translates Cursor protobuf streams into OpenAI-compatible `
 | `runtime/test-integration.cjs` | Mock protobuf-es v2 types + mock SSE server. Primary regression suite. |
 | `src/` | Gateway UI (React 19). `api.ts` → Tauri commands. `providers.ts` presets. |
 | `src-tauri/src/patch.rs` | Backup, inject runtime, regex-wrap `transport()` / `registerConnectTransportProvider`, unlock free-plan model picker, checksums. |
-| `src-tauri/src/restore.rs` | Copy `.cm-bak` back. |
+| `src-tauri/src/restore.rs` | Copy `.cm-bak` back (from `~/Library/Application Support/cursor-custom-model/backups/`, not from inside Cursor.app). |
 | `src-tauri/src/proxy.rs` | Local CORS proxy `:8117` for hosts that fail Chromium preflight. |
 | `src-tauri/src/config.rs` | `~/Library/Application Support/cursor-custom-model/config.json` (Windows: `%APPDATA%\cursor-custom-model\`). |
 | `src-tauri/src/cursor.rs` | Discover Cursor install + the three target files. |
@@ -100,6 +100,7 @@ These were learned the hard way after 1.0.2, mostly while fixing the “Editing 
 | Stuck “Editing …” spinner | `toolCallCompleted` missing UI `EditResult.success.after_full_file_content`. |
 | Connection failed after a few tools | Result on Started, or exec `WriteResult` on Completed. |
 | “You’re paused until usage resets” | Usage-gate unary bypass (`blockUsageGate`). |
+| “Get Cursor Pro for more Agent usage…” | `GetCurrentPeriodUsage.display_message` (1.6.13) or transport wrap missed after a Cursor update (`TRANSPORT_RE` vs 3.21.13+ `structuredLogService.warn` catch). |
 | CORS / GLM / Anthropic / loopback fail | Need the `:8117` proxy; Gateway process must stay running. |
 
 ## Changing the runtime
@@ -115,6 +116,9 @@ After changing the runtime, users must **Stop → Quit Cursor (tray too) → Sta
 
 - Proxy is only for CORS-hostile origins (GLM, Anthropic, Google, MiniMax, `http://`). OpenAI / DeepSeek / OpenRouter / Qwen / Kimi can go direct HTTPS.
 - Patch regexes in `patch.rs` (`TRANSPORT_RE`, `EXT_RE`, model-picker locks) break when Cursor minifies differently. Prefer the generic regex over the hard-coded `ANCHOR_DESKTOP` string.
+- Never write `.cm-bak` inside `Cursor.app`. Extra files break the sealed signature and macOS shows “Cursor is damaged and can’t be opened.” Backups go under the Gateway config dir `backups/`. If that dialog appears, look for leftover `*.cm-bak` in the bundle and move them out. After Start, ad-hoc re-sign `Cursor.app` (`codesign --force --deep --sign -`).
+- Cursor 3.21+ Statsig `cursor_agent_host`: Agent/Run leaves the wrapped Connect transport and hits Cursor’s servers (usage-limit banner with server `details.title` / `details.buttons`). `patch.rs` forces `isCursorAgentHostEnabled()` to `false` so Agent stays on the legacy path.
+- Cursor 3.21.13+ `transport()` still does `return await FN(this._provider,AbortSignal.timeout(TO))` but the catch logs `connect_transport_wait_timeout` before throwing. Wrap only the try-return; leave the catch body alone. Extension host still uses `registerConnectTransportProvider(n){this._connectTransportProvider=n,…}`.
 
 ## Git / release
 

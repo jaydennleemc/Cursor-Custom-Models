@@ -1362,6 +1362,66 @@ async function runTests(T) {
         x[2] === "GetCreditGrantsBalance",
     ),
   );
+  // T20c: 3.21+ GetCurrentPeriodUsage — enabled=false + dummy planUsage (not 100%)
+  const PlanUsageT = makeType("aiserver.v1.GetCurrentPeriodUsageResponse.PlanUsage", [
+    { no: 1, name: "total_spend", kind: "scalar" },
+    { no: 2, name: "included_spend", kind: "scalar" },
+    { no: 3, name: "bonus_spend", kind: "scalar" },
+    { no: 4, name: "limit", kind: "scalar" },
+    { no: 12, name: "total_percent_used", kind: "scalar" },
+  ]);
+  const RespUsage = makeType("aiserver.v1.GetCurrentPeriodUsageResponse", [
+    { no: 3, name: "plan_usage", kind: "message", T: PlanUsageT },
+    { no: 6, name: "enabled", kind: "scalar" },
+    { no: 7, name: "display_message", kind: "scalar", opt: true },
+  ]);
+  const mUsage = {
+    name: "GetCurrentPeriodUsage",
+    I: {},
+    O: RespUsage,
+    kind: 0,
+  };
+  const gUsage = await wrapped.unary(svcDash, mUsage, null, null, {}, {});
+  const usageMsgOk =
+    gUsage.stream === false &&
+    gUsage.message instanceof RespUsage &&
+    gUsage.message.enabled === false &&
+    gUsage.message.displayMessage === "" &&
+    gUsage.message.planUsage instanceof PlanUsageT &&
+    gUsage.message.planUsage.includedSpend === 0 &&
+    gUsage.message.planUsage.limit > 0 &&
+    !origCalls.some(
+      (x) =>
+        x[0] === "unary" &&
+        x[1] === "aiserver.v1.DashboardService" &&
+        x[2] === "GetCurrentPeriodUsage",
+    );
+  T("T20c GetCurrentPeriodUsage门禁(enabled=false+未用完额度)", usageMsgOk);
+  const PlanInfoT = makeType("aiserver.v1.GetPlanInfoResponse.PlanInfo", [
+    { no: 1, name: "plan_name", kind: "scalar" },
+    { no: 2, name: "included_amount_cents", kind: "scalar" },
+  ]);
+  const NextUpgradeT = makeType("aiserver.v1.GetPlanInfoResponse.NextUpgrade", [
+    { no: 5, name: "description", kind: "scalar" },
+  ]);
+  const RespPlan = makeType("aiserver.v1.GetPlanInfoResponse", [
+    { no: 1, name: "plan_info", kind: "message", T: PlanInfoT, opt: true },
+    { no: 2, name: "next_upgrade", kind: "message", T: NextUpgradeT, opt: true },
+  ]);
+  const mPlan = { name: "GetPlanInfo", I: {}, O: RespPlan, kind: 0 };
+  const gPlan = await wrapped.unary(svcDash, mPlan, null, null, {}, {});
+  const planOk =
+    gPlan.message instanceof RespPlan &&
+    gPlan.message.planInfo instanceof PlanInfoT &&
+    gPlan.message.planInfo.planName === "pro" &&
+    gPlan.message.nextUpgrade === undefined &&
+    !origCalls.some(
+      (x) =>
+        x[0] === "unary" &&
+        x[1] === "aiserver.v1.DashboardService" &&
+        x[2] === "GetPlanInfo",
+    );
+  T("T20d GetPlanInfo门禁(pro stub,无 nextUpgrade)", planOk);
 
   // ================= agent.v1.AgentService/Run (Cursor Agents 界面) =================
   const svcAgent = { typeName: "agent.v1.AgentService" };
