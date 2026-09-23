@@ -84,6 +84,12 @@ Patch backups (`*.cm-bak`) live in that folder’s `backups/` directory, **not**
 
 Advanced settings cover model mapping (`*` is the fallback), which RPC channels to intercept, Agent tools and context (env, rules, repo, tree, MCP), sampling, and extra HTTP headers.
 
+### Updates
+
+On launch, the sidebar asks GitHub Releases whether a newer Gateway build exists. When one does, **Update to x.y.z** downloads that build, checks its signature, installs it, and restarts the app. Config and the Cursor patch stay on disk.
+
+Install the first release that contains this updater from the GitHub release assets. Later versions update from inside the app.
+
 ## Build from source
 
 Requires Node.js 18+, stable Rust, and [Tauri 2 system libraries](https://v2.tauri.app/start/prerequisites/).
@@ -93,3 +99,5 @@ npm install
 npm run tauri dev      # development
 npm run tauri build    # installers
 ```
+
+Tagged releases (`v*.*.*`) also sign updater artifacts. That build needs the GitHub Actions secrets `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. The matching public key is in `src-tauri/tauri.conf.json`. Keep the private key out of the repo. `src-tauri/tauri.release.json` turns updater artifacts on for those release builds; a normal local `tauri build` does not require the key.
