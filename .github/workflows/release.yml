@@ -17,15 +17,15 @@ jobs:
         include:
           - label: macOS ARM
             platform: macos-latest
-            args: --target aarch64-apple-darwin
+            args: --config src-tauri/tauri.release.json --target aarch64-apple-darwin
             rust-targets: aarch64-apple-darwin
           - label: macOS Intel
             platform: macos-latest
-            args: --target x86_64-apple-darwin
+            args: --config src-tauri/tauri.release.json --target x86_64-apple-darwin
             rust-targets: x86_64-apple-darwin
           - label: Windows
             platform: windows-latest
-            args: ""
+            args: --config src-tauri/tauri.release.json
             rust-targets: ""
     runs-on: ${{ matrix.platform }}
     timeout-minutes: 60
@@ -56,12 +56,17 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && '-' || '' }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: Cursor Gateway ${{ github.ref_name }}
           releaseBody: See the assets to download this version and install.
           releaseDraft: false
           prerelease: false
+          includeUpdaterJson: true
+          updaterJsonPreferNsis: true
+          retryAttempts: 5
           args: ${{ matrix.args }}
 
       # freeway-desktop: codesign --sign - , strip quarantine, then hdiutil DMG.
@@ -120,3 +125,32 @@ jobs:
           if [ -n "$TAURI_DMG" ]; then
             gh release delete-asset "$TAG" "$(basename "$TAURI_DMG")" --yes || true
           fi
+
+  updater-manifest:
+    name: Check updater manifest
+    needs: publish
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - name: Require every platform in latest.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist-release
+          gh release download "$TAG" --pattern latest.json --dir dist-release --clobber
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            const manifest = JSON.parse(readFileSync("dist-release/latest.json", "utf8"));
+            const keys = Object.keys(manifest.platforms ?? {});
+            const need = ["darwin-aarch64", "darwin-x86_64"];
+            const missing = need.filter((key) => !keys.includes(key));
+            if (!keys.some((key) => key.startsWith("windows-x86_64"))) missing.push("windows-x86_64");
+            console.log("platforms:", keys.join(", ") || "(none)");
+            console.log("version:", manifest.version);
+            if (missing.length) {
+              console.error("latest.json is missing: " + missing.join(", "));
+              process.exit(1);
+            }
+          '

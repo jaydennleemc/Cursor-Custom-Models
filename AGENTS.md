@@ -124,4 +124,5 @@ After changing the runtime, users must **Stop → Quit Cursor (tray too) → Sta
 
 - Default branch is `dev`. `main` is the release snapshot.
 - Release PRs: branch `release/v1.0.x` → PR into `dev` → merge → tag `v1.0.x` on the merge commit → push the tag (triggers `.github/workflows/release.yml`).
+- In-app update uses `tauri-plugin-updater`. The public key and GitHub `latest.json` endpoint live in `tauri.conf.json`. Release builds pass `src-tauri/tauri.release.json` so `createUpdaterArtifacts` is on, and CI signs with `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Do not commit the private key. A plain local `tauri build` leaves artifacts off so it does not need the key. The sidebar button is the whole UI: check on launch, one click downloads, verifies, installs, and relaunches.
 - Runtime protocol (`1.6.x` in the JS header) is not the same number as the app (`1.0.x`). Mention both when you change intercept behavior.

@@ -152,6 +152,12 @@ const en: Dict = {
   profileExists: "A profile named '{name}' already exists",
   cancel: "Cancel",
   deleting: "Deleting…",
+
+  updateTo: "Update to {version}",
+  updateDownloading: "Downloading…",
+  updateDownloadingPercent: "Downloading {percent}%",
+  updateInstalling: "Installing…",
+  updateFailed: "Update failed: {message}",
 };
 
 const zhCN: Dict = {
@@ -295,6 +301,12 @@ const zhCN: Dict = {
   profileExists: "已有名为 '{name}' 的方案",
   cancel: "取消",
   deleting: "删除中…",
+
+  updateTo: "更新到 {version}",
+  updateDownloading: "正在下载…",
+  updateDownloadingPercent: "正在下载 {percent}%",
+  updateInstalling: "正在安装…",
+  updateFailed: "更新失败：{message}",
 };
 
 const zhTW: Dict = {
@@ -438,6 +450,12 @@ const zhTW: Dict = {
   profileExists: "已有名為 '{name}' 的方案",
   cancel: "取消",
   deleting: "刪除中…",
+
+  updateTo: "更新到 {version}",
+  updateDownloading: "正在下載…",
+  updateDownloadingPercent: "正在下載 {percent}%",
+  updateInstalling: "正在安裝…",
+  updateFailed: "更新失敗：{message}",
 };
 
 const TABLES: Record<Locale, Dict> = { en, "zh-CN": zhCN, "zh-TW": zhTW };

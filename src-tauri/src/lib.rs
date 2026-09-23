@@ -302,6 +302,8 @@ fn open_log_file() -> Result<String, String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|_app| {
             log_server::start();
             if let (Ok(cfg), Ok(px)) = (config::load_config(), config::load_proxy()) {

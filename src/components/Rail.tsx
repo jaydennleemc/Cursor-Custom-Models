@@ -1,21 +1,24 @@
+import type { AppUpdate } from "../hooks/useAppUpdate";
 import type { ReadyGateway } from "../hooks/useGateway";
 import { btnGhost, btnQuit, btnStart, btnStop, card, cx, headingSm, mono, rail } from "../ui";
+import { BrandTitle } from "./BrandTitle";
 import { Spinner } from "./Spinner";
 import { StatusLine } from "./StatusLine";
 
-export function Rail({ gw, version }: { gw: ReadyGateway; version: string }) {
+export function Rail({
+  gw,
+  version,
+  update,
+}: {
+  gw: ReadyGateway;
+  version: string;
+  update: AppUpdate;
+}) {
   const { status, patchedCount, busy, force, setForce, log, logRef, t } = gw;
 
   return (
     <aside className={rail}>
-      <div className="flex flex-col gap-1.5">
-        <h1 className="m-0 flex items-baseline gap-2 text-lg font-bold leading-tight tracking-[-0.03em]">
-          Cursor Gateway{" "}
-          <span className="font-mono text-[11px] font-medium tracking-[0.04em] text-muted">
-            v{version}
-          </span>
-        </h1>
-      </div>
+      <BrandTitle version={version} update={update} t={t} />
 
       <div className={cx(card, "divide-y divide-line/70")}>
         <StatusLine
