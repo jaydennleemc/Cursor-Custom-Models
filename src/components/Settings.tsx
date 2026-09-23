@@ -394,7 +394,7 @@ export function Settings({ gw }: { gw: ReadyGateway }) {
                   min={1000}
                   value={config.agentToolTimeoutMs}
                   onChange={(e) =>
-                    setConfig({ ...config, agentToolTimeoutMs: Number(e.target.value) || 30000 })
+                    setConfig({ ...config, agentToolTimeoutMs: Number(e.target.value) || 120000 })
                   }
                 />
               </label>

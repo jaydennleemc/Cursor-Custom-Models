@@ -811,7 +811,7 @@
    *   5. 直到模型输出纯文本 → turnEnded
    * ============================================================ */
   var AGENT_TOOLS_ON = CFG.agentTools !== false; // 默认开启
-  var AGENT_TOOL_TIMEOUT = CFG.agentToolTimeoutMs || 30000;
+  var AGENT_TOOL_TIMEOUT = CFG.agentToolTimeoutMs || 120000;
   // Agent/Chat tool-loop rounds: unlimited — break on natural stop (no tool calls or tools off)
   var AGENT_HB_MS = CFG.agentHeartbeatMs > 0 ? CFG.agentHeartbeatMs : 2000;
   // OpenAI 函数名 → agent.v1 映射(仅保留有独立 exec 通道的工具: glob/semantic 无 result 通道已移除)
@@ -1775,7 +1775,7 @@
         label + " config:",
         "baseUrl=" + (cfg.baseUrl || ""),
         "| model=" + (cfg.defaultModel || ""),
-        "| maxTokens=" + (cfg.maxTokens || 16384),
+        "| maxTokens=" + (cfg.maxTokens || 32768),
         "| temperature=" +
           (cfg.temperature == null ? "default" : cfg.temperature),
         "| tools=" + (cfg.agentTools === false ? "off" : "on"),
@@ -1846,7 +1846,7 @@
       var body = { model: model, messages: messages, stream: true };
       if (tools && tools.length) body.tools = tools;
       if (CFG.temperature != null) body.temperature = CFG.temperature;
-      body.max_tokens = CFG.maxTokens || 16384; // default 16384 for reasoning models (DeepSeek etc.)
+      body.max_tokens = CFG.maxTokens || 32768; // default 32768 for reasoning models (DeepSeek etc.)
       var headers = {
         "content-type": "application/json",
         authorization: "Bearer " + CFG.apiKey,

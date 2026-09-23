@@ -145,7 +145,7 @@ fn default_layout_lines() -> u32 {
     160
 }
 fn default_timeout() -> u32 {
-    30_000
+    120_000
 }
 fn default_proxy_upstream() -> String {
     "https://open.bigmodel.cn".into()
