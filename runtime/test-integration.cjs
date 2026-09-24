@@ -2658,4 +2658,180 @@ async function runTests(T) {
     lastRequestBody.model === "hot-swap-model",
     String(lastRequestBody.model),
   );
+
+  // T44: agent edit_file 本地搜索替换 — 注入环境无 require(ESM extension host
+  //     场景: new Function 作用域拿不到 require, globalThis.require 不存在,
+  //     process.mainModule 在 Node 26 已移除), 必须经 process.getBuiltinModule
+  //     拿到 fs。全程不走 exec 通道, Completed 用 UI 层 EditResult.success。
+  const t44Path = "/tmp/cm-edit-t44-" + process.pid + ".txt";
+  fs.writeFileSync(t44Path, "line1\nOLD\nline3\n", "utf8");
+  sseQueue = [
+    [
+      {
+        delta: {
+          tool_calls: [
+            {
+              index: 0,
+              id: "call_e",
+              type: "function",
+              function: {
+                name: "edit_file",
+                arguments: JSON.stringify({
+                  path: t44Path,
+                  old_string: "OLD",
+                  new_string: "NEW",
+                }),
+              },
+            },
+          ],
+        },
+      },
+    ],
+    [{ delta: { content: "改好了" } }],
+  ];
+  const b44 = requestBodies.length;
+  r = await wrapped.stream(
+    svcAgent,
+    mAgentRun,
+    null,
+    null,
+    {},
+    oneMsg(mkAgentReq("conv-t44", "改文件")),
+  );
+  const srv44 = await collect(r.message);
+  const inners44 = srv44.map(agentInner);
+  const started44 = inners44.find((x) => x && x.case === "toolCallStarted");
+  const completed44 = inners44.find(
+    (x) => x && x.case === "toolCallCompleted",
+  );
+  const text44 = inners44
+    .filter((x) => x && x.case === "textDelta")
+    .map((x) => x.value.text)
+    .join("");
+  const body44b = requestBodies[b44 + 1] || {};
+  const tool44 =
+    body44b.messages && body44b.messages.find((m) => m.role === "tool");
+  let disk44 = null;
+  try {
+    disk44 = fs.readFileSync(t44Path, "utf8");
+  } catch (e) {
+    /* noop */
+  }
+  try {
+    fs.unlinkSync(t44Path);
+  } catch (e) {
+    /* noop */
+  }
+  const cpRes44 =
+    completed44 &&
+    completed44.value.toolCall.tool &&
+    completed44.value.toolCall.tool.value.result;
+  T(
+    "T44 agent edit_file 本地执行(无 require 环境)",
+    !!started44 &&
+      started44.value.toolCall.tool.case === "editToolCall" &&
+      started44.value.toolCall.tool.value.args instanceof EditArgsT &&
+      started44.value.toolCall.tool.value.args.path === t44Path &&
+      !started44.value.toolCall.tool.value.result &&
+      srv44.every(
+        (m) => !(m.message && m.message.case === "execServerMessage"),
+      ) &&
+      disk44 === "line1\nNEW\nline3\n" &&
+      !!cpRes44 &&
+      cpRes44 instanceof EditResultT &&
+      cpRes44.result &&
+      cpRes44.result.case === "success" &&
+      cpRes44.result.value.path === t44Path &&
+      cpRes44.result.value.afterFullFileContent === "line1\nNEW\nline3\n" &&
+      cpRes44.result.value.message === "File edited successfully" &&
+      text44 === "改好了" &&
+      inners44.filter((x) => x && x.case === "turnEnded").length === 1 &&
+      !!tool44 &&
+      tool44.tool_call_id === "call_e" &&
+      tool44.content.includes("File edited successfully") &&
+      !tool44.content.includes("filesystem not available"),
+    "disk=" +
+      JSON.stringify(disk44) +
+      " toolMsg=" +
+      (tool44 && tool44.content.slice(0, 120)) +
+      " cases=" +
+      JSON.stringify(inners44.map((x) => x && x.case)),
+  );
+
+  // T45: edit_file old_string 未命中 — 错误回传模型, 文件不动, turn 正常收尾
+  const t45Path = "/tmp/cm-edit-t45-" + process.pid + ".txt";
+  fs.writeFileSync(t45Path, "AAAA", "utf8");
+  sseQueue = [
+    [
+      {
+        delta: {
+          tool_calls: [
+            {
+              index: 0,
+              id: "call_e2",
+              type: "function",
+              function: {
+                name: "edit_file",
+                arguments: JSON.stringify({
+                  path: t45Path,
+                  old_string: "NOPE",
+                  new_string: "B",
+                }),
+              },
+            },
+          ],
+        },
+      },
+    ],
+    [{ delta: { content: "没改成" } }],
+  ];
+  const b45 = requestBodies.length;
+  r = await wrapped.stream(
+    svcAgent,
+    mAgentRun,
+    null,
+    null,
+    {},
+    oneMsg(mkAgentReq("conv-t45", "改不到")),
+  );
+  const srv45 = await collect(r.message);
+  const inners45 = srv45.map(agentInner);
+  const completed45 = inners45.find(
+    (x) => x && x.case === "toolCallCompleted",
+  );
+  const body45b = requestBodies[b45 + 1] || {};
+  const tool45 =
+    body45b.messages && body45b.messages.find((m) => m.role === "tool");
+  let disk45 = null;
+  try {
+    disk45 = fs.readFileSync(t45Path, "utf8");
+  } catch (e) {
+    /* noop */
+  }
+  try {
+    fs.unlinkSync(t45Path);
+  } catch (e) {
+    /* noop */
+  }
+  const cpRes45 =
+    completed45 &&
+    completed45.value.toolCall.tool &&
+    completed45.value.toolCall.tool.value.result;
+  T(
+    "T45 edit_file old_string 未命中(错误回传+收尾)",
+    disk45 === "AAAA" &&
+      !!tool45 &&
+      tool45.content.includes("old_string not found") &&
+      inners45.filter((x) => x && x.case === "turnEnded").length === 1 &&
+      !!cpRes45 &&
+      cpRes45 instanceof EditResultT &&
+      cpRes45.result &&
+      cpRes45.result.case === "success" &&
+      typeof cpRes45.result.value.message === "string" &&
+      cpRes45.result.value.message.includes("old_string not found"),
+    "disk=" +
+      JSON.stringify(disk45) +
+      " toolMsg=" +
+      (tool45 && tool45.content.slice(0, 120)),
+  );
 }

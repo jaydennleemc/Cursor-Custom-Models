@@ -1,11 +1,16 @@
 /* ============================================================
- * Cursor Custom Models Runtime v1.6.14
+ * Cursor Custom Models Runtime v1.6.15
  * Injected at the end of three files (same code, separate processes):
  *   workbench.desktop.main.js / workbench.glass.main.js (renderer)
  *   extensionHostProcess.js (extension host — where HTTP actually terminates)
  * Intercepts the ConnectRPC transport and forwards Chat / Cmd+K / Agent
  * requests to the user-configured OpenAI-compatible API.
  *
+ * v1.6.15: Fix edit_file always failing with "filesystem not available" —
+ *          the ESM extension host has no require(); resolve fs via
+ *          process.getBuiltinModule (Node ≥20.16/22.3). execResultBag
+ *          unwraps a {case,value} message envelope so UI EditResult
+ *          .success.message gets the result string, and lifts `error`.
  * v1.6.14: GetCurrentPeriodUsage returns enabled=false + a dummy planUsage
  *          (0 used / huge limit) so the "You've hit your usage limit" card
  *          cannot compute 100%. Also stub GetPlanInfo (no nextUpgrade).
@@ -1487,21 +1492,32 @@
   var _editFs = null;
   function getEditFs() {
     if (_editFs) return _editFs;
+    // CJS extension host(旧版 Cursor)
     try {
       _editFs = require("fs");
-      return _editFs;
+      if (_editFs) return _editFs;
     } catch (e1) {}
     try {
       _editFs = globalThis.require && globalThis.require("fs");
-      return _editFs;
+      if (_editFs) return _editFs;
     } catch (e2) {}
     try {
       _editFs =
+        typeof process !== "undefined" &&
         process.mainModule &&
         process.mainModule.require &&
         process.mainModule.require("fs");
-      return _editFs;
+      if (_editFs) return _editFs;
     } catch (e3) {}
+    // ESM extension host(Cursor 3.x): 没有任何 require。
+    // Node >= 20.16 / 22.3 的 process.getBuiltinModule 可绕开 require 拿内置模块。
+    try {
+      _editFs =
+        typeof process !== "undefined" &&
+        typeof process.getBuiltinModule === "function" &&
+        process.getBuiltinModule("fs");
+      if (_editFs) return _editFs;
+    } catch (e4) {}
     return null;
   }
   function localEditFile(args) {
@@ -1551,8 +1567,15 @@
     } catch (eJ) {
       /* fallthrough */
     }
+    // exec 信封形态 {message:{case:"writeResult", value:...}}: 解包取内层值,
+    // 避免把信封对象本身塞进 UI result 的 message 字符串字段
+    if (msg.message && msg.message.case && msg.message.value) {
+      var inner0 = execResultBag(msg.message.value);
+      for (var i0 in inner0) if (o[i0] == null) o[i0] = inner0[i0];
+    }
     if (msg.content != null && o.content == null) o.content = msg.content;
     if (msg.message != null && o.message == null) o.message = msg.message;
+    if (msg.error != null && o.error == null) o.error = msg.error;
     if (msg.path != null && o.path == null) o.path = msg.path;
     if (msg.afterFullFileContent != null && o.afterFullFileContent == null)
       o.afterFullFileContent = msg.afterFullFileContent;
@@ -1560,6 +1583,7 @@
       var inner = execResultBag(msg.result.value);
       for (var ik in inner) if (o[ik] == null) o[ik] = inner[ik];
     }
+    if (o.message == null && o.error != null) o.message = o.error;
     return o;
   }
   function copyIfField(T, dst, localName, val) {
@@ -3209,7 +3233,7 @@
 
   g.__CURSOR_CM__ = {
     active: true,
-    version: "1.6.14",
+    version: "1.6.15",
     stats: stats,
     config: {
       baseUrl: CFG.baseUrl,
