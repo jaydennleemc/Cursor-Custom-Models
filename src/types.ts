@@ -20,6 +20,8 @@ export interface AppConfig {
   blockUsageGate: boolean;
   agentTools: boolean;
   agentToolTimeoutMs: number;
+  maxTokens: number;
+  agentMaxToolRounds: number;
   agentContext: AgentContext;
 }
 

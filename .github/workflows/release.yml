@@ -9,8 +9,40 @@ permissions:
   contents: write
 
 jobs:
+  version-check:
+    name: Tag matches package versions
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: lts/*
+      - name: Verify tag equals package.json / tauri.conf.json / Cargo.toml
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG=$(node -p "require('./package.json').version")
+          TAURI=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          CARGO=$(awk '/^\[package\]/{f=1} f && /^version = /{sub(/^version = /,""); gsub(/"/,""); print; exit}' src-tauri/Cargo.toml)
+          echo "tag=$TAG  package.json=$PKG  tauri.conf.json=$TAURI  Cargo.toml=$CARGO"
+          fail=0
+          for pair in "package.json:$PKG" "tauri.conf.json:$TAURI" "Cargo.toml:$CARGO"; do
+            name="${pair%%:*}"
+            ver="${pair#*:}"
+            if [ "$ver" != "$TAG" ]; then
+              echo "❌ $name version ($ver) != tag ($TAG)"
+              fail=1
+            fi
+          done
+          if [ "$fail" -ne 0 ]; then
+            echo "Bump every version location to $TAG before tagging, or the updater will serve a mismatched latest.json."
+            exit 1
+          fi
+
   publish:
     name: ${{ matrix.label }}
+    needs: version-check
     strategy:
       fail-fast: false
       matrix:

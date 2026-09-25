@@ -63,6 +63,10 @@ pub struct AppConfig {
     pub agent_tools: bool,
     #[serde(default = "default_timeout")]
     pub agent_tool_timeout_ms: u32,
+    #[serde(default = "default_max_tokens")]
+    pub max_tokens: u32,
+    #[serde(default = "default_max_tool_rounds")]
+    pub agent_max_tool_rounds: u32,
     #[serde(default)]
     pub agent_context: AgentContext,
 }
@@ -80,6 +84,8 @@ impl Default for AppConfig {
             block_usage_gate: true,
             agent_tools: true,
             agent_tool_timeout_ms: default_timeout(),
+            max_tokens: default_max_tokens(),
+            agent_max_tool_rounds: default_max_tool_rounds(),
             agent_context: AgentContext::default(),
         }
     }
@@ -146,6 +152,12 @@ fn default_layout_lines() -> u32 {
 }
 fn default_timeout() -> u32 {
     120_000
+}
+fn default_max_tokens() -> u32 {
+    32_768
+}
+fn default_max_tool_rounds() -> u32 {
+    8
 }
 fn default_proxy_upstream() -> String {
     "https://open.bigmodel.cn".into()
@@ -261,6 +273,25 @@ mod tests {
         assert_eq!(cfg, back);
         assert!(json.contains("baseUrl"));
         assert!(json.contains("interceptMethods"));
+    }
+
+    #[test]
+    fn max_tokens_and_rounds_defaults() {
+        // 新欄位缺席時走 serde default(32768 / 8), 舊 config.json 不需遷移
+        let cfg: AppConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(cfg.max_tokens, 32_768);
+        assert_eq!(cfg.agent_max_tool_rounds, 8);
+        // 注入 runtime 的 JSON 必須是 camelCase 鍵名
+        let inject = cfg.to_inject_json(1).unwrap();
+        assert!(inject.contains("\"maxTokens\":32768"), "{inject}");
+        assert!(inject.contains("\"agentMaxToolRounds\":8"), "{inject}");
+        // 使用者設定的值要帶過去
+        let mut cfg2 = AppConfig::default();
+        cfg2.max_tokens = 8192;
+        cfg2.agent_max_tool_rounds = 3;
+        let inject2 = cfg2.to_inject_json(1).unwrap();
+        assert!(inject2.contains("\"maxTokens\":8192"), "{inject2}");
+        assert!(inject2.contains("\"agentMaxToolRounds\":3"), "{inject2}");
     }
 
     #[test]

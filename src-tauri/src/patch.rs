@@ -80,12 +80,14 @@ fn backed_up_version_at(marker: &Path) -> Option<String> {
 /// A Cursor update replaces the app files wholesale, so backups taken from an
 /// older version would restore old-version content into the new bundle and
 /// skew it. Drop every .cm-bak when the recorded version no longer matches.
-fn invalidate_stale_backups(install: &CursorInstall, current: &str, log: &mut Vec<String>) {
+/// Called from Start (patch_install) and Stop (restore_install) so a Force
+/// restore can never write old-version files into a new bundle.
+pub(crate) fn invalidate_stale_backups(install: &CursorInstall, current: &str, log: &mut Vec<String>) {
     let Some(marker) = backup_version_path() else { return };
     invalidate_stale_backups_at(install, current, &marker, external_backup_dir(), log);
 }
 
-fn invalidate_stale_backups_at(
+pub(crate) fn invalidate_stale_backups_at(
     install: &CursorInstall,
     current: &str,
     marker: &Path,
@@ -399,6 +401,7 @@ pub fn patch_install(install: &CursorInstall, injected_json: &str, log: &mut Vec
     }
 
     let mut any_ok = false;
+    let mut failed: Vec<String> = Vec::new();
     for target in &install.targets {
         let leaf = file_leaf(target);
         match patch_one(target, &runtime) {
@@ -406,13 +409,17 @@ pub fn patch_install(install: &CursorInstall, injected_json: &str, log: &mut Vec
                 any_ok = true;
                 log.push(format!("{leaf}  patched"));
             }
-            Err(e) => log.push(format!("{leaf}  failed — {e}")),
+            Err(e) => {
+                failed.push(leaf.clone());
+                log.push(format!("{leaf}  failed — {e}"));
+            }
         }
     }
     if !any_ok {
         return Err(AppError::msg("No files were patched"));
     }
-    match checksum::update_product_json(&install.product_json, &install.out_dir, &install.targets) {
+    let checksum = checksum::update_product_json(&install.product_json, &install.out_dir, &install.targets);
+    match &checksum {
         Ok(true) => log.push("product.json  checksums updated".into()),
         Ok(false) => log.push("product.json  unchanged".into()),
         Err(e) => log.push(format!("product.json  failed — {e}")),
@@ -425,6 +432,26 @@ pub fn patch_install(install: &CursorInstall, injected_json: &str, log: &mut Vec
         record_backup_version(&v);
     }
     resign_macos_app(install, log);
+    finish_patch(&failed, checksum)
+}
+
+/// Combine per-file results into the final Start outcome. Cursor refuses to
+/// load files whose product.json checksums are stale, and a half-patched
+/// bundle (e.g. renderer wrapped but extension host not) silently degrades
+/// the intercept — both must surface as Start failures, after backups have
+/// been recorded and the bundle re-signed so Stop can still recover.
+fn finish_patch(
+    failed: &[String],
+    checksum: std::result::Result<bool, AppError>,
+) -> Result<()> {
+    checksum.map_err(|e| AppError::msg(format!("product.json checksum update failed — {e}")))?;
+    if !failed.is_empty() {
+        return Err(AppError::msg(format!(
+            "Partial patch: {} target file(s) failed ({}). Use Stop to restore, then check the log.",
+            failed.len(),
+            failed.join(", ")
+        )));
+    }
     Ok(())
 }
 
@@ -609,6 +636,28 @@ mod tests {
     fn runtime_has_placeholder() {
         assert!(RUNTIME.contains(PLACEHOLDER));
         assert!(RUNTIME.contains(MARKER));
+    }
+
+    #[test]
+    fn finish_patch_all_ok_is_success() {
+        assert!(finish_patch(&[], Ok(true)).is_ok());
+        assert!(finish_patch(&[], Ok(false)).is_ok());
+    }
+
+    #[test]
+    fn finish_patch_partial_failure_is_error() {
+        let err = finish_patch(&["extensionHostProcess.js".into()], Ok(true)).unwrap_err();
+        assert!(err.to_string().contains("Partial patch"), "{err}");
+        assert!(err.to_string().contains("extensionHostProcess.js"), "{err}");
+    }
+
+    #[test]
+    fn finish_patch_checksum_failure_is_error() {
+        let err = finish_patch(&[], Err(AppError::msg("disk full"))).unwrap_err();
+        assert!(err.to_string().contains("checksum"), "{err}");
+        // 校驗和失敗優先於 partial(兩者皆錯時先報 checksum)
+        let err2 = finish_patch(&["a.js".into()], Err(AppError::msg("disk full"))).unwrap_err();
+        assert!(err2.to_string().contains("checksum"), "{err2}");
     }
 
     #[test]

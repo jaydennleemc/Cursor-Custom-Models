@@ -686,9 +686,9 @@ const server = http.createServer((req, res) => {
           for (const s of script) {
             if (res.destroyed || res.writableEnded) return; // 客户端abort后停止写入, 避免write-after-abort
             try {
-              res.write(
-                `data: ${JSON.stringify({ choices: [{ delta: s.delta }] })}\n\n`,
-              );
+              const chSlow = { delta: s.delta };
+              if (s.finish) chSlow.finish_reason = s.finish;
+              res.write(`data: ${JSON.stringify({ choices: [chSlow] })}\n\n`);
             } catch (e) {
               return;
             }
@@ -705,9 +705,9 @@ const server = http.createServer((req, res) => {
         return;
       }
       for (const s of script) {
-        res.write(
-          `data: ${JSON.stringify({ choices: [{ delta: s.delta }] })}\n\n`,
-        );
+        const ch = { delta: s.delta };
+        if (s.finish) ch.finish_reason = s.finish;
+        res.write(`data: ${JSON.stringify({ choices: [ch] })}\n\n`);
       }
       res.write("data: [DONE]\n\n");
       res.end();
@@ -2833,5 +2833,183 @@ async function runTests(T) {
       JSON.stringify(disk45) +
       " toolMsg=" +
       (tool45 && tool45.content.slice(0, 120)),
+  );
+
+  // T46: agentMaxToolRounds=1 — 达到工具轮次上限后停止执行工具。
+  //     模型连续两轮都要调 edit_file: 第一轮必须执行, 第二轮必须不执行。
+  const t46Path = "/tmp/cm-rounds-t46-" + process.pid + ".txt";
+  fs.writeFileSync(t46Path, "orig", "utf8");
+  sseQueue = [
+    [
+      {
+        delta: {
+          tool_calls: [
+            {
+              index: 0,
+              id: "call_r1",
+              type: "function",
+              function: {
+                name: "edit_file",
+                arguments: JSON.stringify({
+                  path: t46Path,
+                  old_string: "orig",
+                  new_string: "one",
+                }),
+              },
+            },
+          ],
+        },
+      },
+    ],
+    [
+      {
+        delta: {
+          tool_calls: [
+            {
+              index: 0,
+              id: "call_r2",
+              type: "function",
+              function: {
+                name: "edit_file",
+                arguments: JSON.stringify({
+                  path: t46Path,
+                  old_string: "one",
+                  new_string: "two",
+                }),
+              },
+            },
+          ],
+        },
+      },
+    ],
+    [{ delta: { content: "done" } }],
+  ];
+  const wrap46 = new Function(
+    runtimeSrc.replace(
+      JSON.stringify(cfg),
+      JSON.stringify({ ...cfg, agentMaxToolRounds: 1 }),
+    ) + "\n;return globalThis.__CURSOR_CM__.wrap;",
+  )()(origTransport);
+  const b46 = requestBodies.length;
+  r = await wrap46.stream(
+    svcAgent,
+    mAgentRun,
+    null,
+    null,
+    {},
+    oneMsg(mkAgentReq("conv-t46", "回合上限")),
+  );
+  const srv46 = await collect(r.message);
+  const inners46 = srv46.map(agentInner);
+  const completed46 = inners46.filter(
+    (x) => x && x.case === "toolCallCompleted",
+  );
+  const turn46 = inners46.filter((x) => x && x.case === "turnEnded");
+  let disk46 = null;
+  try {
+    disk46 = fs.readFileSync(t46Path, "utf8");
+  } catch (e) {
+    /* noop */
+  }
+  try {
+    fs.unlinkSync(t46Path);
+  } catch (e) {
+    /* noop */
+  }
+  T(
+    "T46 agentMaxToolRounds=1 工具轮次有界",
+    completed46.length === 1 &&
+      turn46.length === 1 &&
+      disk46 === "one" &&
+      requestBodies.length - b46 === 2,
+    "completed=" +
+      completed46.length +
+      " turn=" +
+      turn46.length +
+      " disk=" +
+      JSON.stringify(disk46) +
+      " upstream=" +
+      (requestBodies.length - b46),
+  );
+
+  // T47: finish_reason=length + tool 参数被截断 — 禁止以空参执行工具。
+  //     必须: ① 发截断警告 ② 不执行工具(无 Started/Completed, 文件不动)
+  //     ③ 截断错误回传模型 ④ 正常 turnEnded 收尾
+  const t47Path = "/tmp/cm-trunc-t47-" + process.pid + ".txt";
+  fs.writeFileSync(t47Path, "KEEP", "utf8");
+  sseQueue = [
+    [
+      {
+        delta: {
+          tool_calls: [
+            {
+              index: 0,
+              id: "call_t",
+              type: "function",
+              function: {
+                name: "edit_file",
+                arguments: '{"path":"' + t47Path + '","old_st',
+              },
+            },
+          ],
+        },
+        finish: "length",
+      },
+    ],
+    [{ delta: { content: "ok" } }],
+  ];
+  const b47 = requestBodies.length;
+  r = await wrapped.stream(
+    svcAgent,
+    mAgentRun,
+    null,
+    null,
+    {},
+    oneMsg(mkAgentReq("conv-t47", "截断参数")),
+  );
+  const srv47 = await collect(r.message);
+  const inners47 = srv47.map(agentInner);
+  const started47 = inners47.find((x) => x && x.case === "toolCallStarted");
+  const completed47 = inners47.find(
+    (x) => x && x.case === "toolCallCompleted",
+  );
+  const text47 = inners47
+    .filter((x) => x && x.case === "textDelta")
+    .map((x) => x.value.text)
+    .join("");
+  const turn47 = inners47.filter((x) => x && x.case === "turnEnded");
+  const body47b = requestBodies[b47 + 1] || {};
+  const tool47 =
+    body47b.messages && body47b.messages.find((m) => m.role === "tool");
+  let disk47 = null;
+  try {
+    disk47 = fs.readFileSync(t47Path, "utf8");
+  } catch (e) {
+    /* noop */
+  }
+  try {
+    fs.unlinkSync(t47Path);
+  } catch (e) {
+    /* noop */
+  }
+  T(
+    "T47 截断工具参数不执行+警告",
+    !started47 &&
+      !completed47 &&
+      disk47 === "KEEP" &&
+      /truncated/i.test(text47) &&
+      turn47.length === 1 &&
+      requestBodies.length - b47 === 2 &&
+      !!tool47 &&
+      /invalid tool arguments|truncated/i.test(tool47.content) &&
+      !/path is required/.test(tool47.content),
+    "text=" +
+      JSON.stringify(text47.slice(0, 160)) +
+      " disk=" +
+      JSON.stringify(disk47) +
+      " started=" +
+      !!started47 +
+      " toolMsg=" +
+      (tool47 && tool47.content.slice(0, 120)),
   );
 }
