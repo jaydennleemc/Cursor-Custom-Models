@@ -1,11 +1,19 @@
 /* ============================================================
- * Cursor Custom Models Runtime v1.6.15
+ * Cursor Custom Models Runtime v1.6.16
  * Injected at the end of three files (same code, separate processes):
  *   workbench.desktop.main.js / workbench.glass.main.js (renderer)
  *   extensionHostProcess.js (extension host — where HTTP actually terminates)
  * Intercepts the ConnectRPC transport and forwards Chat / Cmd+K / Agent
  * requests to the user-configured OpenAI-compatible API.
  *
+ * v1.6.16: Bound the tool loop with CFG.agentMaxToolRounds (default 8):
+ *          once the cap is reached the next upstream call omits `tools`,
+ *          so the model must answer with text (T46). Never execute a tool
+ *          whose JSON arguments fail to parse — push an error result back
+ *          to the model instead of running it with `{}` (T47). The
+ *          finish_reason=length truncation warning now also fires when
+ *          tools are active. LIVE_CFG_KEYS trimmed to keys AppConfig
+ *          actually defines (maxTokens / agentMaxToolRounds included).
  * v1.6.15: Fix edit_file always failing with "filesystem not available" —
  *          the ESM extension host has no require(); resolve fs via
  *          process.getBuiltinModule (Node ≥20.16/22.3). execResultBag
@@ -817,7 +825,14 @@
    * ============================================================ */
   var AGENT_TOOLS_ON = CFG.agentTools !== false; // 默认开启
   var AGENT_TOOL_TIMEOUT = CFG.agentToolTimeoutMs || 120000;
-  // Agent/Chat tool-loop rounds: unlimited — break on natural stop (no tool calls or tools off)
+  // Agent/Chat tool-loop rounds cap (T46): default 8, read live from CFG so
+  // a hot-swapped profile takes effect on the next round. At the cap the
+  // upstream call omits `tools` → model must answer with text → loop ends.
+  function agentMaxRounds() {
+    var n = Number(CFG.agentMaxToolRounds);
+    if (!isFinite(n) || n < 1) return 8;
+    return Math.floor(n);
+  }
   var AGENT_HB_MS = CFG.agentHeartbeatMs > 0 ? CFG.agentHeartbeatMs : 2000;
   // OpenAI 函数名 → agent.v1 映射(仅保留有独立 exec 通道的工具: glob/semantic 无 result 通道已移除)
   var AGENT_TOOL_MAP = {
@@ -1775,6 +1790,7 @@
   /* ---------- OpenAI 兼容流式调用 ---------- */
   var _cfgFetch = null;
   var _cfgFetchedAt = 0;
+  // Hot-swap keys — must mirror Rust AppConfig fields (config.rs, camelCase)
   var LIVE_CFG_KEYS = [
     "enabled",
     "baseUrl",
@@ -1782,16 +1798,12 @@
     "defaultModel",
     "modelMapping",
     "extraHeaders",
-    "temperature",
     "maxTokens",
-    "sendReasoningAsText",
     "blockUsageGate",
     "agentTools",
-    "agentSystemPrompt",
     "agentToolTimeoutMs",
     "agentMaxToolRounds",
     "agentContext",
-    "debugDump",
   ];
   function logConfig(label, cfg) {
     try {
@@ -1804,7 +1816,7 @@
           (cfg.temperature == null ? "default" : cfg.temperature),
         "| tools=" + (cfg.agentTools === false ? "off" : "on"),
         "| intercept=" + (cfg.interceptMethods || []).length + " methods",
-        "| sendReasoning=" + (cfg.sendReasoningAsText ? "on" : "off"),
+        "| maxRounds=" + (cfg.agentMaxToolRounds || 8),
         "| blockUsageGate=" + (cfg.blockUsageGate === false ? "off" : "on"),
       );
     } catch (e) {
@@ -2356,12 +2368,15 @@
       } catch (eMcp) {
         mcpTools = [];
       }
-      var tools = toolsOn ? agentToolSchemas(mcpTools) : null;
       var finalText = "";
       var watermark = collected.length; // 工具结果只从 watermark 之后匹配
       var callSeq = 0;
+      var roundsDone = 0;
 
       for (var round = 0; ; round++) {
+        var maxRounds = agentMaxRounds();
+        var toolsThisRound = toolsOn && roundsDone < maxRounds;
+        var tools = toolsThisRound ? agentToolSchemas(mcpTools) : null;
         var res;
         try {
           res = yield* heartbeatWhile(
@@ -2436,7 +2451,7 @@
               }
               // Warn if upstream truncated the response (finish_reason: length)
               var fr = it.finishReason && it.finishReason();
-              if (fr === "length" && !toolsOn) {
+              if (fr === "length") {
                 var truncWarn =
                   "\n\n[Warning: Response was truncated by the upstream API (finish_reason: length). " +
                   "Try increasing maxTokens in your provider config, or simplify the request.]";
@@ -2507,7 +2522,7 @@
           .map((k) => pending[k])
           .filter((c) => c.name && resolveAgentTool(c.name, mcpTools));
         // 工具轮次的计划正文进 thinking, 不进回复, 避免 "Let me write…" 叠在最终答案前面。
-        if (calls.length && toolsOn) {
+        if (calls.length && toolsThisRound) {
           if (!roundChunks.length) {
             var tmP = thinkMsg(
               "Using " + calls.map((c) => c.name).join(", ") + "…",
@@ -2521,7 +2536,8 @@
             if (am) yield am;
           }
         }
-        if (!calls.length || !toolsOn) break; // 纯文本回合 → 结束循环
+        if (!calls.length || !toolsThisRound) break; // 纯文本回合, 或已达工具轮次上限 → 结束循环
+        roundsDone++;
 
         log(
           "agent round",
@@ -2545,10 +2561,23 @@
           var c2 = calls[ci];
           if (!c2.id) c2.id = "call_" + ++callSeq;
           var argsObj = {};
+          var argsOk = true;
           try {
             argsObj = JSON.parse(c2.args || "{}");
           } catch (eJ) {
-            argsObj = {};
+            argsOk = false;
+          }
+          // 参数 JSON 解析失败(常见于 finish_reason=length 截断): 禁止以
+          // 空参执行工具, 把错误回传模型让其修正 (T47)
+          if (!argsOk) {
+            log("tool args invalid, skip exec:", c2.name);
+            messages.push({
+              role: "tool",
+              tool_call_id: c2.id,
+              content:
+                '{"error":"invalid tool arguments (possibly truncated by max_tokens; finish_reason=length)"}',
+            });
+            continue;
           }
           // 三段式协议: 1) toolCallStarted(UI 展示) 2) execServerMessage(真实执行指令)
           // 3) 等待 execClientMessage 结果 → toolCallCompleted 收尾
@@ -2776,7 +2805,7 @@
       } catch (eM2) {
         mcpTools = [];
       }
-      var tools = chatToolSchemas(EnumT, mcpTools);
+      var tools = chatToolSchemas(EnumT, mcpTools); // schemas; per-round cap below
       if (emitter && emitter.kind === "wrap") {
         var ss2 = maybeStreamStart(RespT);
         if (ss2) yield ss2;
@@ -2785,14 +2814,18 @@
       var finalText = "";
       var watermark = collected.length;
       var callSeq = 0;
+      var chatRoundsDone = 0;
       for (var round = 0; ; round++) {
+        var chatMaxRounds = agentMaxRounds();
+        var chatToolsThisRound = chatRoundsDone < chatMaxRounds;
+        var roundTools = chatToolsThisRound ? tools : null;
         var res;
         try {
           res = await callUpstream(
             messages,
             info.model,
             signal,
-            tools.length ? tools : null,
+            roundTools && roundTools.length ? roundTools : null,
           );
         } catch (e) {
           if (e && e.name === "AbortError") throw e;
@@ -2871,7 +2904,7 @@
           .filter((c) => c.name && resolveChatTool(c.name, EnumT, mcpTools));
         // Warn if upstream truncated the response (finish_reason: length)
         var fr2 = it.finishReason && it.finishReason();
-        if (fr2 === "length" && !calls.length) {
+        if (fr2 === "length") {
           var truncWarn2 =
             "\n\n[Warning: Response was truncated by the upstream API (finish_reason: length). " +
             "Try increasing maxTokens in your provider config, or simplify the request.]";
@@ -2879,7 +2912,8 @@
           var amTrunc = makeRespMsg(emitter, RespT, truncWarn2, null);
           if (amTrunc) yield amTrunc;
         }
-        if (!calls.length) break; // 纯文本回合 -> 结束循环
+        if (!calls.length || !chatToolsThisRound) break; // 纯文本回合, 或已达工具轮次上限
+        chatRoundsDone++;
         log(
           "chat tool round",
           round + 1,
@@ -2900,10 +2934,22 @@
           var c3 = calls[ci2];
           if (!c3.id) c3.id = "chatcall_" + ++callSeq;
           var argsObj2 = {};
+          var argsOk2 = true;
           try {
             argsObj2 = JSON.parse(c3.args || "{}");
           } catch (eJ2) {
-            argsObj2 = {};
+            argsOk2 = false;
+          }
+          // 参数被截断/无法解析: 不以空参执行, 错误回传模型 (与 agent 路径一致)
+          if (!argsOk2) {
+            log("chat tool args invalid, skip exec:", c3.name);
+            messages.push({
+              role: "tool",
+              tool_call_id: c3.id,
+              content:
+                '{"error":"invalid tool arguments (possibly truncated by max_tokens; finish_reason=length)"}',
+            });
+            continue;
           }
           // edit_file: execute locally (search/replace via fs), skip Cursor exec
           if (c3.name === "edit_file") {
@@ -3233,7 +3279,7 @@
 
   g.__CURSOR_CM__ = {
     active: true,
-    version: "1.6.15",
+    version: "1.6.16",
     stats: stats,
     config: {
       baseUrl: CFG.baseUrl,

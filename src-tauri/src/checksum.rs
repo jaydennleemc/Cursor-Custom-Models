@@ -1,4 +1,4 @@
-use crate::error::Result;
+use crate::error::{AppError, Result};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use regex::Regex;
@@ -50,20 +50,28 @@ pub fn update_product_json(product_json: &Path, out_dir: &Path, targets: &[std::
 /// Verify every checksum in product.json except the ones Gateway rewrites
 /// (the patch targets). A mismatch among files we never touch means the
 /// bundle mixes two Cursor versions — patching would mask that, so Start
-/// refuses. Returns the mismatched relative paths.
+/// refuses. Unreadable / unparseable product.json or a missing checksums
+/// map fails closed (Err) instead of silently passing. Returns the
+/// mismatched relative paths.
 pub fn verify_unpatched_checksums(
     product_json: &Path,
     out_dir: &Path,
     targets: &[std::path::PathBuf],
-) -> Vec<String> {
-    let Ok(text) = fs::read_to_string(product_json) else {
-        return Vec::new();
-    };
-    let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
-        return Vec::new();
-    };
+) -> Result<Vec<String>> {
+    let text = fs::read_to_string(product_json).map_err(|e| {
+        AppError::msg(format!(
+            "product.json missing or unreadable ({e}) — cannot verify bundle integrity"
+        ))
+    })?;
+    let json = serde_json::from_str::<serde_json::Value>(&text).map_err(|e| {
+        AppError::msg(format!(
+            "product.json is not valid JSON ({e}) — cannot verify bundle integrity"
+        ))
+    })?;
     let Some(checksums) = json.get("checksums").and_then(|c| c.as_object()) else {
-        return Vec::new();
+        return Err(AppError::msg(
+            "product.json has no checksums map — cannot verify bundle integrity",
+        ));
     };
     let target_rels: Vec<String> = targets
         .iter()
@@ -85,7 +93,7 @@ pub fn verify_unpatched_checksums(
             mismatched.push(rel.clone());
         }
     }
-    mismatched
+    Ok(mismatched)
 }
 
 pub fn restore_product_json(product_json: &Path) -> Result<bool> {
@@ -132,12 +140,38 @@ mod tests {
             ),
         )
         .unwrap();
-        let mismatched = verify_unpatched_checksums(&product, &dir.join("out"), &[target.clone()]);
+        let mismatched = verify_unpatched_checksums(&product, &dir.join("out"), &[target.clone()]).unwrap();
         assert_eq!(mismatched, vec!["vs/workbench/preload.js"]);
 
         // Target files are skipped: Gateway rewrites their checksums itself.
         fs::write(&product, format!(r#"{{"checksums": {{"vs/workbench/workbench.desktop.main.js": "{target_hash}"}}}}"#)).unwrap();
-        assert!(verify_unpatched_checksums(&product, &dir.join("out"), &[target]).is_empty());
+        assert!(verify_unpatched_checksums(&product, &dir.join("out"), &[target]).unwrap().is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn verify_fails_closed_on_unverifiable_product_json() {
+        let dir = std::env::temp_dir().join(format!("ccm-verify-fc-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("out");
+        fs::create_dir_all(&out).unwrap();
+
+        // 1) product.json 不存在 → Err(不再靜默放行)
+        let missing = verify_unpatched_checksums(&dir.join("nope.json"), &out, &[]);
+        assert!(missing.is_err(), "missing product.json must fail closed");
+
+        // 2) 無法解析的 JSON → Err
+        let bad = dir.join("product.json");
+        fs::write(&bad, "not-json{{").unwrap();
+        let bad = verify_unpatched_checksums(&bad, &out, &[]);
+        assert!(bad.is_err(), "invalid JSON must fail closed");
+
+        // 3) 沒有 checksums 物件 → Err
+        let nocheck = dir.join("product2.json");
+        fs::write(&nocheck, r#"{"name":"cursor"}"#).unwrap();
+        let nocheck = verify_unpatched_checksums(&nocheck, &out, &[]);
+        assert!(nocheck.is_err(), "missing checksums map must fail closed");
+
         let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -169,11 +169,19 @@ fn start_patch_inner(mut config: AppConfig) -> Result<OpResult, String> {
     config::save_config(&config)?;
     let install = cursor::discover()?;
     let mut log = Vec::new();
-    let mismatched = checksum::verify_unpatched_checksums(
+    let mismatched = match checksum::verify_unpatched_checksums(
         &install.product_json,
         &install.out_dir,
         &install.targets,
-    );
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            log.push(format!(
+                "{e}. Reinstall Cursor from a fresh DMG (delete /Applications/Cursor.app first), then Start again."
+            ));
+            return Ok(OpResult { ok: false, log });
+        }
+    };
     if !mismatched.is_empty() {
         log.push(format!(
             "Cursor install mixes files from different versions ({}). Reinstall Cursor from a fresh DMG (delete /Applications/Cursor.app first), then Start again.",

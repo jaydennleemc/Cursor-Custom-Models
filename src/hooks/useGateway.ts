@@ -76,6 +76,9 @@ export function useGateway(): Gateway {
   const logRef = useRef<HTMLPreElement>(null);
   // Track the last persisted config snapshot so we can compute isDirty
   const [persistedConfig, setPersistedConfig] = useState<AppConfig | null>(null);
+  // Live mirror of isDirty for use inside callbacks (refresh must not clobber
+  // in-progress edits when it re-reads persisted config).
+  const isDirtyRef = useRef(false);
 
   useEffect(() => {
     const el = logRef.current;
@@ -89,8 +92,10 @@ export function useGateway(): Gateway {
   const refresh = useCallback(async () => {
     const [nextStatus, nextConfig] = await Promise.all([api.getStatus(), api.getConfig()]);
     setStatus(nextStatus);
-    setConfig(nextConfig);
     setPersistedConfig(nextConfig);
+    // 有未存的編輯時保留表單, 只更新 status / persisted 基準
+    if (isDirtyRef.current) return;
+    setConfig(nextConfig);
     const matched = matchProvider(nextConfig.baseUrl);
     setProviderId(matched.id);
     setModelCustom(!matched.models.includes(nextConfig.defaultModel));
@@ -120,6 +125,34 @@ export function useGateway(): Gateway {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [config, mapping, headersText, persistedConfig]);
+
+  useEffect(() => {
+    isDirtyRef.current = isDirty;
+  }, [isDirty]);
+
+  // 狀態輪詢: 外部重開/關閉 Cursor 後側欄也要跟著更新 (只讀 status,
+  // 不碰 config 表單)
+  useEffect(() => {
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const s = await api.getStatus();
+        if (!cancelled) setStatus(s);
+      } catch {
+        /* 短暫失敗忽略, 下輪再試 */
+      }
+    };
+    const id = window.setInterval(() => void tick(), 5000);
+    const onVisible = () => {
+      if (!document.hidden) void tick();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, []);
 
   function writeLog(title: string, lines: string[]) {
     const block = [`${clock(locale)}  ${title}`, ...lines.filter((line) => line.trim())].join("\n");
@@ -164,9 +197,22 @@ export function useGateway(): Gateway {
     try {
       await api.saveConfig(cfg);
       setPersistedConfig(cfg);
-    } catch {
-      // keep UI; next Save retries
+    } catch (err) {
+      // 存檔失敗必須讓使用者看到, 否則會以為設定已生效
+      const text = err instanceof Error ? err.message : String(err);
+      setBanner({ kind: "bad", text });
     }
+  }
+
+  /** Returns an error message when baseUrl is not a usable http(s) URL. */
+  function baseUrlError(cfg: AppConfig): string | null {
+    try {
+      const u = new URL(cfg.baseUrl);
+      if (u.protocol !== "http:" && u.protocol !== "https:") return t("baseUrlInvalid");
+    } catch {
+      return t("baseUrlInvalid");
+    }
+    return null;
   }
 
   function syncConfig(cfg: AppConfig) {
@@ -197,6 +243,8 @@ export function useGateway(): Gateway {
   async function onSave() {
     await run("save", async () => {
       const next = assembleConfig();
+      const badUrl = baseUrlError(next);
+      if (badUrl) throw new Error(badUrl);
       const path = await api.saveConfig(next);
       setConfig(next);
       setPersistedConfig(next);
@@ -209,6 +257,12 @@ export function useGateway(): Gateway {
     setBanner(null);
     try {
       const next = assembleConfig();
+      const badUrl = baseUrlError(next);
+      if (badUrl) {
+        writeLog(t("testFail"), [badUrl]);
+        setBanner({ kind: "bad", text: badUrl });
+        return;
+      }
       const result = await api.testConnection(next);
       const http = result.status || "—";
       if (result.ok) {
@@ -249,6 +303,8 @@ export function useGateway(): Gateway {
         return;
       }
       const next = assembleConfig();
+      const badUrl = baseUrlError(next);
+      if (badUrl) throw new Error(badUrl);
       const result = await api.startPatch(next);
       writeLog(t("start"), result.log);
       setBanner({

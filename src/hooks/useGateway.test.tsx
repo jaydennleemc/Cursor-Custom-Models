@@ -28,6 +28,8 @@ const config: AppConfig = {
   blockUsageGate: true,
   agentTools: true,
   agentToolTimeoutMs: 120000,
+  maxTokens: 32768,
+  agentMaxToolRounds: 8,
   agentContext: {
     env: true,
     rules: true,

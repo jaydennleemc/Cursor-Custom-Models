@@ -398,6 +398,38 @@ export function Settings({ gw }: { gw: ReadyGateway }) {
                   }
                 />
               </label>
+              <label className={field}>
+                <span className="inline-flex items-center gap-1">
+                  {t("maxTokens")}
+                  <Tip text={t("tip.maxTokens")} label={t("help")} />
+                </span>
+                <input
+                  className={control}
+                  type="number"
+                  min={256}
+                  max={2000000}
+                  value={config.maxTokens}
+                  onChange={(e) =>
+                    setConfig({ ...config, maxTokens: Number(e.target.value) || 32768 })
+                  }
+                />
+              </label>
+              <label className={field}>
+                <span className="inline-flex items-center gap-1">
+                  {t("agentMaxToolRounds")}
+                  <Tip text={t("tip.agentMaxToolRounds")} label={t("help")} />
+                </span>
+                <input
+                  className={control}
+                  type="number"
+                  min={1}
+                  max={100}
+                  value={config.agentMaxToolRounds}
+                  onChange={(e) =>
+                    setConfig({ ...config, agentMaxToolRounds: Number(e.target.value) || 8 })
+                  }
+                />
+              </label>
             </div>
 
             {/* Context */}

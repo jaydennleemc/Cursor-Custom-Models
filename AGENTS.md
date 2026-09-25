@@ -51,7 +51,7 @@ npm run tauri build
 
 Do not claim an Agent/Chat protocol fix works unless `npm run test:runtime` is green.
 
-App version lives in `package.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`, and `src/App.tsx` (`APP_VERSION`). Runtime protocol version is `g.__CURSOR_CM__.version` inside `cm-runtime.js` (currently `1.6.15`). The file banner `Cursor Custom Models Runtime vX.Y.Z` **must match** that exported version — T1 asserts this. App `1.0.x` and runtime `1.6.x` are independent; keep the four app-version locations in sync with each other.
+App version lives in `package.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`, and the Vite define `__APP_VERSION__` (declared in `vite.config.ts`, typed in `src/vite-env.d.ts`, rendered via `src/App.tsx`). `release.yml` has a `version-check` job that fails the release when the tag disagrees with those three files. Runtime protocol version is `g.__CURSOR_CM__.version` inside `cm-runtime.js` (currently `1.6.16`). The file banner `Cursor Custom Models Runtime vX.Y.Z` **must match** that exported version — T1 asserts this. App `1.0.x` and runtime `1.6.x` are independent; keep the three app-version files in sync with each other.
 
 ## How the Agent path works
 
@@ -89,7 +89,7 @@ These were learned the hard way after 1.0.2, mostly while fixing the “Editing 
 5. **Upstream errors** on Agent must become `textDelta` + `turnEnded`, not a thrown error (no `turnEnded` → Connection failed).
 6. **Do not intercept** `StreamUnifiedChatWithToolsSSE` / Poll. Those are not the content-bearing channel.
 7. Connect-es consumer reads `{ message, header, trailer }`, not v2 `output`.
-8. Keep `AGENT_MAX_ROUNDS` modest (default 8). A broken tool result plus high rounds looks like infinite repeat.
+8. Keep the tool-loop cap modest (`CFG.agentMaxToolRounds`, default 8 — wired through AppConfig and the Settings UI in 1.6.16). A broken tool result plus high rounds looks like infinite repeat; at the cap the runtime omits `tools` so the model must answer with text.
 
 ## Symptom → likely cause
 

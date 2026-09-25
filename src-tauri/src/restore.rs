@@ -5,6 +5,11 @@ use crate::patch::{bak_intact, bak_path, existing_bak, remove_bundle_sidecar};
 use std::fs;
 
 pub fn restore_install(install: &CursorInstall, force: bool, log: &mut Vec<String>) -> Result<()> {
+    // 版本守衛: 備份來自舊版 Cursor 時先丟棄, 避免 Force restore 把
+    // 舊版檔案寫進新 bundle(混合版本破損)。與 Start 的守衛同一套。
+    if let Some(v) = crate::cursor::version(install) {
+        crate::patch::invalidate_stale_backups(install, &v, log);
+    }
     let mut any = false;
     let mut failed = 0usize;
     for target in &install.targets {
