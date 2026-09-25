@@ -62,6 +62,64 @@ fn external_backup_dir() -> Option<PathBuf> {
     crate::config::config_dir_path().ok().map(|p| p.join("backups"))
 }
 
+fn backup_version_path() -> Option<PathBuf> {
+    crate::config::config_dir_path().ok().map(|p| p.join("backup-version.txt"))
+}
+
+/// The Cursor version the current backups were taken from, if recorded.
+pub fn backed_up_version() -> Option<String> {
+    backed_up_version_at(&backup_version_path()?)
+}
+
+fn backed_up_version_at(marker: &Path) -> Option<String> {
+    let text = fs::read_to_string(marker).ok()?;
+    let v = text.trim();
+    if v.is_empty() { None } else { Some(v.to_string()) }
+}
+
+/// A Cursor update replaces the app files wholesale, so backups taken from an
+/// older version would restore old-version content into the new bundle and
+/// skew it. Drop every .cm-bak when the recorded version no longer matches.
+fn invalidate_stale_backups(install: &CursorInstall, current: &str, log: &mut Vec<String>) {
+    let Some(marker) = backup_version_path() else { return };
+    invalidate_stale_backups_at(install, current, &marker, external_backup_dir(), log);
+}
+
+fn invalidate_stale_backups_at(
+    install: &CursorInstall,
+    current: &str,
+    marker: &Path,
+    external_dir: Option<PathBuf>,
+    log: &mut Vec<String>,
+) {
+    let Some(prev) = backed_up_version_at(marker) else { return };
+    if prev == current { return }
+    if let Some(dir) = external_dir {
+        if let Ok(entries) = fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                if entry.file_name().to_string_lossy().ends_with(".cm-bak") {
+                    let _ = fs::remove_file(entry.path());
+                }
+            }
+        }
+    }
+    for target in install.targets.iter().chain(std::iter::once(&install.product_json)) {
+        let sibling = sibling_bak(target);
+        if sibling.is_file() {
+            let _ = fs::remove_file(sibling);
+        }
+    }
+    log.push(format!("cursor  updated {prev} → {current} — discarded stale backups"));
+}
+
+fn record_backup_version(current: &str) {
+    let Some(marker) = backup_version_path() else { return };
+    if let Some(parent) = marker.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::write(&marker, current);
+}
+
 /// Backups must not live inside Cursor.app — extra files invalidate the
 /// sealed signature and macOS reports the app as damaged.
 pub fn bak_path(target: &Path) -> PathBuf {
@@ -336,6 +394,10 @@ pub fn patch_install(install: &CursorInstall, injected_json: &str, log: &mut Vec
         return Err(AppError::msg("Runtime inject failed: marker missing"));
     }
 
+    if let Some(v) = crate::cursor::version(install) {
+        invalidate_stale_backups(install, &v, log);
+    }
+
     let mut any_ok = false;
     for target in &install.targets {
         let leaf = file_leaf(target);
@@ -359,6 +421,9 @@ pub fn patch_install(install: &CursorInstall, injected_json: &str, log: &mut Vec
         remove_bundle_sidecar(target);
     }
     remove_bundle_sidecar(&install.product_json);
+    if let Some(v) = crate::cursor::version(install) {
+        record_backup_version(&v);
+    }
     resign_macos_app(install, log);
     Ok(())
 }
@@ -641,6 +706,39 @@ mod tests {
         assert!(out.content.contains("isRestrictedModelPicker:i}){return!0}"));
         assert!(out.content.contains(r#"{kind:"full"}"#));
         assert!(!out.content.contains("locked_picker"));
+    }
+
+    #[test]
+    fn stale_backups_dropped_only_on_version_change() {
+        let dir = std::env::temp_dir().join(format!("ccm-stale-{}", std::process::id()));
+        let ext = dir.join("backups");
+        fs::create_dir_all(&ext).unwrap();
+        fs::write(ext.join("product.json.cm-bak"), b"{}").unwrap();
+        let target = dir.join("workbench.desktop.main.js");
+        fs::write(&target, b"x").unwrap();
+        fs::write(sibling_bak(&target), b"old").unwrap();
+        let install = CursorInstall {
+            root: dir.clone(),
+            out_dir: dir.clone(),
+            product_json: dir.join("product.json"),
+            targets: vec![target.clone()],
+        };
+        let marker = dir.join("backup-version.txt");
+        fs::write(&marker, "3.21.16").unwrap();
+
+        // Same version: backups kept.
+        let mut log = Vec::new();
+        invalidate_stale_backups_at(&install, "3.21.16", &marker, Some(ext.clone()), &mut log);
+        assert!(ext.join("product.json.cm-bak").is_file());
+        assert!(sibling_bak(&target).is_file());
+        assert!(log.is_empty());
+
+        // Version changed: both external and sibling backups dropped.
+        invalidate_stale_backups_at(&install, "3.21.18", &marker, Some(ext.clone()), &mut log);
+        assert!(!ext.join("product.json.cm-bak").exists());
+        assert!(!sibling_bak(&target).exists());
+        assert!(log.iter().any(|l| l.contains("3.21.16") && l.contains("3.21.18")));
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -94,6 +94,14 @@ pub fn inspect_root(root: &Path) -> Option<CursorInstall> {
     })
 }
 
+/// The Cursor version this install's product.json claims to be. Used to
+/// detect Cursor updates that replaced files underneath an existing patch.
+pub fn version(install: &CursorInstall) -> Option<String> {
+    let text = std::fs::read_to_string(&install.product_json).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&text).ok()?;
+    json.get("version")?.as_str().map(|s| s.to_string())
+}
+
 pub fn target_statuses(install: &CursorInstall) -> Vec<TargetStatus> {
     TARGET_RELS
         .iter()

@@ -40,6 +40,8 @@ export interface AppStatus {
   cursorFound: boolean;
   cursorRoot: string | null;
   cursorRunning: boolean;
+  cursorVersion: string | null;
+  patchedVersion: string | null;
   targets: TargetStatus[];
   productJson: string | null;
   configPath: string;

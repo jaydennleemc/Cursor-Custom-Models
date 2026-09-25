@@ -30,6 +30,8 @@ const en: Dict = {
   statusIdle: "Not running",
   statusPatch: "Patch",
   statusPatched: "{n}/{total} files patched",
+  autoUpdateNote: "Auto-update is off while patched — upgrade Cursor via DMG.",
+  cursorUpdated: "Cursor updated {from} → {to} — press Start again.",
 
   start: "Start",
   starting: "Starting…",
@@ -179,6 +181,8 @@ const zhCN: Dict = {
   statusIdle: "未运行",
   statusPatch: "补丁",
   statusPatched: "{n}/{total} 个文件已打",
+  autoUpdateNote: "Patch 生效期间 Cursor 自动更新不可用，升级请用 DMG 安装包。",
+  cursorUpdated: "Cursor 已更新 {from} → {to}，请重新 Start。",
 
   start: "启动",
   starting: "启动中…",
@@ -328,6 +332,8 @@ const zhTW: Dict = {
   statusIdle: "未執行",
   statusPatch: "補丁",
   statusPatched: "{n}/{total} 個檔案已套用",
+  autoUpdateNote: "Patch 生效期間 Cursor 自動更新不可用，升級請用 DMG 安裝包。",
+  cursorUpdated: "Cursor 已更新 {from} → {to}，請重新 Start。",
 
   start: "啟動",
   starting: "啟動中…",
@@ -459,6 +465,13 @@ const zhTW: Dict = {
 };
 
 const TABLES: Record<Locale, Dict> = { en, "zh-CN": zhCN, "zh-TW": zhTW };
+
+/** Exported for the key-parity test. */
+export const LOCALE_TABLES: Record<Locale, readonly string[]> = {
+  en: Object.keys(en),
+  "zh-CN": Object.keys(zhCN),
+  "zh-TW": Object.keys(zhTW),
+};
 
 export function isLocale(value: string | null): value is Locale {
   return value === "en" || value === "zh-CN" || value === "zh-TW";

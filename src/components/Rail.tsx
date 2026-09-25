@@ -44,6 +44,15 @@ export function Rail({
         <div className={cx(mono, "pt-1.5")} title={status.cursorRoot ?? status.configPath}>
           {status.cursorRoot ?? status.configPath}
         </div>
+        {status.patchedVersion &&
+        status.cursorVersion &&
+        status.patchedVersion !== status.cursorVersion ? (
+          <p className="m-0 pt-1 text-[12px] leading-snug text-warn">
+            {t("cursorUpdated", { from: status.patchedVersion, to: status.cursorVersion })}
+          </p>
+        ) : patchedCount > 0 ? (
+          <p className="m-0 pt-1 text-[12px] leading-snug text-muted">{t("autoUpdateNote")}</p>
+        ) : null}
       </div>
 
       <div className="grid shrink-0 gap-2">

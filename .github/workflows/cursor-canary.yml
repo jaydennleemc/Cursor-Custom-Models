@@ -1,0 +1,43 @@
+name: Cursor canary
+
+# The patch anchors in patch.rs are regexes over Cursor's minified bundles.
+# A Cursor release can break them at any time; this job dry-runs the anchors
+# against the latest stable build so we find out before users do.
+on:
+  schedule:
+    - cron: "17 3 * * *" # daily 03:17 UTC
+  workflow_dispatch:
+
+jobs:
+  anchors:
+    name: Patch anchors vs latest Cursor
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Download latest Cursor DMG
+        run: |
+          URL=$(curl -sL "https://www.cursor.com/api/download?platform=darwin-arm64&releaseTrack=stable" \
+            | node -pe "JSON.parse(require('fs').readFileSync(0, 'utf8')).downloadUrl")
+          echo "Downloading $URL"
+          curl -sL -o /tmp/cursor.dmg "$URL"
+
+      - name: Mount DMG
+        id: mount
+        run: echo "point=$(hdiutil attach /tmp/cursor.dmg -nobrowse -readonly | grep -o '/Volumes/.*' | head -1)" >> "$GITHUB_OUTPUT"
+
+      - name: Dry-run patch anchors
+        run: |
+          cargo run --manifest-path src-tauri/Cargo.toml -- \
+            --check-patch "${{ steps.mount.outputs.point }}/Cursor.app/Contents/Resources/app"
+
+      - name: Unmount DMG
+        if: always()
+        run: hdiutil detach "${{ steps.mount.outputs.point }}" -quiet || true

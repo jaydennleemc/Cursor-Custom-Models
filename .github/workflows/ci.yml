@@ -40,5 +40,29 @@ jobs:
 
       - run: npm ci
       - run: npm run typecheck
+      - run: npm run test:ui
       - run: npm run test:runtime
       - run: npm run test:rust
+
+  build:
+    name: Build
+    runs-on: macos-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - run: npm ci
+      # Compile the real binary so build breakage surfaces in CI, not at tag
+      # time. --no-bundle skips DMG/MSI packaging (slow, needs signing).
+      - run: npx tauri build --no-bundle

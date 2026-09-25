@@ -23,12 +23,62 @@ pub fn log_server_port() -> u16 {
     log_server::port()
 }
 
+/// Dry-run the patch anchors against a Cursor install without writing
+/// anything. The canary workflow runs this against the latest Cursor release
+/// so a Cursor update that breaks the anchors fails CI before users hit it.
+/// Exit code 0 = every target matched; 1 = at least one anchor miss.
+pub fn check_patch_cli(root: &str) -> i32 {
+    let Some(install) = cursor::inspect_root(std::path::Path::new(root)) else {
+        eprintln!("cursor install not found at {root}");
+        return 2;
+    };
+    let mut failed = false;
+    let mut already_patched = 0usize;
+    for target in &install.targets {
+        let leaf = target
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| target.display().to_string());
+        match std::fs::read_to_string(target) {
+            Ok(content) => {
+                if patch::file_is_patched(target) {
+                    // The runtime tail is present; anchors are consumed by
+                    // patching, so a miss here is expected, not a regression.
+                    already_patched += 1;
+                    println!("{leaf}  already patched (runtime marker present)");
+                    continue;
+                }
+                let applied = patch::apply_anchors(&content);
+                if applied.patched {
+                    println!("{leaf}  anchors ok — {}", applied.detail.trim());
+                } else {
+                    println!("{leaf}  ANCHOR MISS");
+                    failed = true;
+                }
+            }
+            Err(e) => {
+                println!("{leaf}  unreadable — {e}");
+                failed = true;
+            }
+        }
+    }
+    if failed {
+        1
+    } else if already_patched > 0 {
+        3
+    } else {
+        0
+    }
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AppStatus {
     cursor_found: bool,
     cursor_root: Option<String>,
     cursor_running: bool,
+    cursor_version: Option<String>,
+    patched_version: Option<String>,
     targets: Vec<TargetStatus>,
     product_json: Option<String>,
     config_path: String,
@@ -54,6 +104,8 @@ fn get_status() -> Result<AppStatus, String> {
             cursor_found: true,
             cursor_root: Some(install.root.display().to_string()),
             cursor_running: running,
+            cursor_version: cursor::version(&install),
+            patched_version: patch::backed_up_version(),
             targets: cursor::target_statuses(&install),
             product_json: Some(install.product_json.display().to_string()),
             config_path,
@@ -65,6 +117,8 @@ fn get_status() -> Result<AppStatus, String> {
             cursor_found: false,
             cursor_root: None,
             cursor_running: running,
+            cursor_version: None,
+            patched_version: patch::backed_up_version(),
             targets: Vec::new(),
             product_json: None,
             config_path,
@@ -115,6 +169,18 @@ fn start_patch_inner(mut config: AppConfig) -> Result<OpResult, String> {
     config::save_config(&config)?;
     let install = cursor::discover()?;
     let mut log = Vec::new();
+    let mismatched = checksum::verify_unpatched_checksums(
+        &install.product_json,
+        &install.out_dir,
+        &install.targets,
+    );
+    if !mismatched.is_empty() {
+        log.push(format!(
+            "Cursor install mixes files from different versions ({}). Reinstall Cursor from a fresh DMG (delete /Applications/Cursor.app first), then Start again.",
+            mismatched.join(", ")
+        ));
+        return Ok(OpResult { ok: false, log });
+    }
     let inject = match prepare_injected_config(&config, &mut log) {
         Ok(cfg) => cfg,
         Err(e) => {
@@ -305,6 +371,7 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|_app| {
+            config::prune_old_logs(10);
             log_server::start();
             if let (Ok(cfg), Ok(px)) = (config::load_config(), config::load_proxy()) {
                 if let Some((origin, _)) = proxy::cors_proxy_rewrite(&cfg.base_url, px.port) {

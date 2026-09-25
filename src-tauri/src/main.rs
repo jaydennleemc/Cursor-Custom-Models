@@ -2,6 +2,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(pos) = args.iter().position(|a| a == "--check-patch") {
+        let root = args.get(pos + 1).map(String::as_str).unwrap_or("");
+        std::process::exit(cursor_custom_model_lib::check_patch_cli(root));
+    }
     #[cfg(all(target_os = "macos", debug_assertions))]
     macos_reexec_as_display_name();
     cursor_custom_model_lib::run()

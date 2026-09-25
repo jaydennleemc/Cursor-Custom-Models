@@ -9,8 +9,9 @@
     "typecheck": "tsc --noEmit && tsc -p tsconfig.node.json --noEmit",
     "preview": "vite preview",
     "tauri": "tauri",
-    "test:runtime": "node runtime/test-integration.cjs",
-    "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml"
+    "test:runtime": "node --check runtime/cm-runtime.js && node runtime/test-integration.cjs",
+    "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "test:ui": "vitest run"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.3",
@@ -23,11 +24,14 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
+    "@testing-library/react": "^16.3.3",
     "@types/node": "^26.4.1",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",
     "@vitejs/plugin-react": "^6.1.1",
+    "jsdom": "^30.1.1",
     "typescript": "~7.0.2",
-    "vite": "^8.2.2"
+    "vite": "^8.2.2",
+    "vitest": "^5.0.1"
   }
 }

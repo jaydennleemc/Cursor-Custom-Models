@@ -47,6 +47,47 @@ pub fn update_product_json(product_json: &Path, out_dir: &Path, targets: &[std::
     Ok(changed)
 }
 
+/// Verify every checksum in product.json except the ones Gateway rewrites
+/// (the patch targets). A mismatch among files we never touch means the
+/// bundle mixes two Cursor versions — patching would mask that, so Start
+/// refuses. Returns the mismatched relative paths.
+pub fn verify_unpatched_checksums(
+    product_json: &Path,
+    out_dir: &Path,
+    targets: &[std::path::PathBuf],
+) -> Vec<String> {
+    let Ok(text) = fs::read_to_string(product_json) else {
+        return Vec::new();
+    };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return Vec::new();
+    };
+    let Some(checksums) = json.get("checksums").and_then(|c| c.as_object()) else {
+        return Vec::new();
+    };
+    let target_rels: Vec<String> = targets
+        .iter()
+        .filter_map(|t| t.strip_prefix(out_dir).ok())
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .collect();
+    let mut mismatched = Vec::new();
+    for (rel, want) in checksums {
+        if target_rels.iter().any(|t| t == rel) {
+            continue;
+        }
+        let Some(want) = want.as_str() else { continue };
+        let path = out_dir.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
+        let Ok(bytes) = fs::read(&path) else {
+            mismatched.push(rel.clone());
+            continue;
+        };
+        if sha256_b64_nopad(&bytes) != want {
+            mismatched.push(rel.clone());
+        }
+    }
+    mismatched
+}
+
 pub fn restore_product_json(product_json: &Path) -> Result<bool> {
     let Some(bak) = crate::patch::existing_bak(product_json) else {
         return Ok(false);
@@ -70,5 +111,33 @@ mod tests {
         assert!(!hash.contains('='));
         assert!(!hash.is_empty());
         assert_eq!(hash, sha256_b64_nopad(b"abc"));
+    }
+
+    #[test]
+    fn verify_flags_mismatched_unpatched_file() {
+        let dir = std::env::temp_dir().join(format!("ccm-verify-{}", std::process::id()));
+        let out = dir.join("out/vs/workbench");
+        fs::create_dir_all(&out).unwrap();
+        let preload = out.join("preload.js");
+        fs::write(&preload, b"new-version-content").unwrap();
+        let target = out.join("workbench.desktop.main.js");
+        fs::write(&target, b"patched-target").unwrap();
+        let product = dir.join("product.json");
+        let good = sha256_b64_nopad(b"old-version-content");
+        let target_hash = sha256_b64_nopad(b"anything");
+        fs::write(
+            &product,
+            format!(
+                r#"{{"checksums": {{"vs/workbench/preload.js": "{good}", "vs/workbench/workbench.desktop.main.js": "{target_hash}"}}}}"#
+            ),
+        )
+        .unwrap();
+        let mismatched = verify_unpatched_checksums(&product, &dir.join("out"), &[target.clone()]);
+        assert_eq!(mismatched, vec!["vs/workbench/preload.js"]);
+
+        // Target files are skipped: Gateway rewrites their checksums itself.
+        fs::write(&product, format!(r#"{{"checksums": {{"vs/workbench/workbench.desktop.main.js": "{target_hash}"}}}}"#)).unwrap();
+        assert!(verify_unpatched_checksums(&product, &dir.join("out"), &[target]).is_empty());
+        let _ = fs::remove_dir_all(&dir);
     }
 }

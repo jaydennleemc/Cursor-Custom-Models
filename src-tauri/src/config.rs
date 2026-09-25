@@ -186,6 +186,32 @@ pub fn log_file_path() -> Result<PathBuf> {
     Ok(config_dir_path()?.join(format!("runtime-{today}.log")))
 }
 
+/// Keep the newest `keep` runtime logs; one file is created per day and they
+/// otherwise accumulate forever.
+pub fn prune_old_logs(keep: usize) {
+    let Ok(dir) = config_dir_path() else { return };
+    let Ok(entries) = fs::read_dir(&dir) else { return };
+    let mut logs: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .map(|n| {
+                    let n = n.to_string_lossy();
+                    n.starts_with("runtime-") && n.ends_with(".log")
+                })
+                .unwrap_or(false)
+        })
+        .collect();
+    logs.sort();
+    if logs.len() <= keep {
+        return;
+    }
+    for path in &logs[..logs.len() - keep] {
+        let _ = fs::remove_file(path);
+    }
+}
+
 pub fn load_config() -> Result<AppConfig> {
     load_or_default(&config_file_path()?)
 }
