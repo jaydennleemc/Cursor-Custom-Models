@@ -6,7 +6,7 @@ export function Tip({ text, label }: { text: string; label: string }) {
     <span className="group/tip relative inline-flex shrink-0">
       <button
         type="button"
-        className="h-[18px] w-[18px] cursor-help rounded-full border border-line bg-transparent p-0 text-[11px] font-semibold leading-none text-muted group-hover/tip:border-copper group-hover/tip:text-copper-2 group-focus-within/tip:border-copper group-focus-within/tip:text-copper-2"
+        className="h-[18px] w-[18px] cursor-help rounded-full border border-line bg-transparent p-0 text-[10px] font-semibold leading-none text-muted group-hover/tip:border-copper group-hover/tip:text-copper-2 group-focus-within/tip:border-copper group-focus-within/tip:text-copper-2"
         aria-label={label}
         aria-describedby={id}
         onClick={(e) => {

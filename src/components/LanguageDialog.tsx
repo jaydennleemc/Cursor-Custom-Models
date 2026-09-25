@@ -53,7 +53,7 @@ export function LanguageDialog({
               key={item.id}
               type="submit"
               className={cx(
-                "min-h-12 cursor-pointer rounded-[10px] border bg-app px-3.5 text-left text-[13.5px] text-ink",
+                "min-h-12 cursor-pointer rounded-[10px] border bg-app px-3.5 text-left text-[12.5px] text-ink",
                 item.id === locale
                   ? "border-copper text-copper-2"
                   : "border-line hover:border-copper-2",

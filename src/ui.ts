@@ -3,7 +3,7 @@ export function cx(...parts: Array<string | false | null | undefined>) {
 }
 
 export const shell =
-  "relative isolate grid h-full grid-cols-1 min-[921px]:grid-cols-[320px_1fr] max-[920px]:overflow-auto";
+  "relative isolate grid h-full grid-cols-1 min-[850px]:grid-cols-[295px_1fr] max-[849px]:overflow-auto";
 
 export const rail =
   "relative z-[1] flex h-full min-h-0 flex-col gap-[18px] overflow-hidden border-r border-line bg-rail bg-[radial-gradient(1200px_280px_at_-10%_-20%,rgba(212,120,74,0.16),transparent_50%)] px-5 pb-[18px] pt-[22px]";
@@ -26,7 +26,7 @@ export const btnStop = cx(
 
 export const btnGhost = cx(
   btn,
-  "min-h-9 border border-line bg-transparent text-[13px] text-muted hover:enabled:text-ink",
+  "min-h-9 border border-line bg-transparent text-[12px] text-muted hover:enabled:text-ink",
 );
 
 export const btnQuit = cx(
@@ -42,10 +42,10 @@ export const selectControl =
 
 export const textareaControl = cx(control, "min-h-[88px] resize-y font-mono text-xs leading-snug");
 
-export const field = "grid gap-1.5 text-[13px] text-muted";
+export const field = "grid gap-1.5 text-[12px] text-muted";
 
 export const check =
-  "flex min-h-8 cursor-pointer items-center gap-2 text-[13px] text-ink";
+  "flex min-h-8 cursor-pointer items-center gap-2 text-[12px] text-ink";
 
 export const panel =
   "rounded-2xl border border-line bg-rail px-4 pb-[18px] pt-4 shadow-panel";
@@ -54,13 +54,13 @@ export const card =
   "rounded-[14px] border border-line bg-[rgba(19,17,14,0.55)] p-3";
 
 export const headingSm =
-  "m-0 mb-2.5 text-[13px] font-semibold uppercase tracking-[0.08em] text-muted";
+  "m-0 mb-2.5 text-[12px] font-semibold uppercase tracking-[0.08em] text-muted";
 
 export const headingCopper =
   "m-1 mb-0 flex items-center gap-1 text-xs font-semibold tracking-[0.04em] text-copper-2";
 
 export const mono =
-  "overflow-hidden text-ellipsis whitespace-nowrap font-mono text-[11px] text-muted";
+  "overflow-hidden text-ellipsis whitespace-nowrap font-mono text-[10px] text-muted";
 
 export const iconBtn =
   "inline-flex h-9 w-9 shrink-0 cursor-pointer appearance-none items-center justify-center rounded-[10px] border border-line bg-transparent p-0 leading-none text-muted hover:border-bad hover:text-bad focus-visible:outline-2 focus-visible:outline-copper-2 [&>svg]:block";

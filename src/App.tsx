@@ -15,7 +15,7 @@ export default function App() {
         <div className="noise" />
         <aside className={rail}>
           <BrandTitle version={__APP_VERSION__} update={update} t={gw.t} />
-          <p className="m-0 text-[12px] leading-snug text-muted">{gw.t("loading")}</p>
+          <p className="m-0 text-[11px] leading-snug text-muted">{gw.t("loading")}</p>
         </aside>
         <main className={stage} />
       </div>

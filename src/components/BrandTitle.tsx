@@ -35,7 +35,7 @@ export function BrandTitle({
     <div className="flex flex-col gap-1.5">
       <h1 className="m-0 flex items-baseline gap-2 text-lg font-bold leading-tight tracking-[-0.03em]">
         Cursor Gateway{" "}
-        <span className="font-mono text-[11px] font-medium tracking-[0.04em] text-muted">
+        <span className="font-mono text-[10px] font-medium tracking-[0.04em] text-muted">
           v{version}
         </span>
       </h1>
@@ -67,7 +67,7 @@ export function BrandTitle({
         </div>
       ) : null}
       {phase.kind === "error" ? (
-        <p className="m-0 line-clamp-3 text-[11px] leading-snug break-words text-bad" role="alert">
+        <p className="m-0 line-clamp-3 text-[10px] leading-snug break-words text-bad" role="alert">
           {t("updateFailed", { message: phase.message })}
         </p>
       ) : null}
