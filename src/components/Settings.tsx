@@ -54,7 +54,7 @@ export function Settings({ gw }: { gw: ReadyGateway }) {
   return (
     <main className={stage}>
       <div className="mb-4 flex items-center justify-between gap-3">
-        <h2 className="m-0 text-[19px] tracking-[-0.04em]">{t("settings")}</h2>
+        <h2 className="m-0 text-[17.5px] tracking-[-0.04em]">{t("settings")}</h2>
         <div className="flex items-center gap-2">
           <LanguageDialog locale={locale} onChange={setLocale} t={t} />
           <button
@@ -133,7 +133,7 @@ export function Settings({ gw }: { gw: ReadyGateway }) {
       {banner ? (
         <div
           className={cx(
-            "mb-4 rounded-xl border border-line px-3.5 py-3 text-[12px]",
+            "mb-4 rounded-xl border border-line px-3.5 py-3 text-[11px]",
             banner.kind === "ok" ? "bg-[#182016] text-[#d7e7c8]" : "bg-[#2a1c16] text-[#f3d4ce]",
           )}
         >
@@ -187,7 +187,7 @@ export function Settings({ gw }: { gw: ReadyGateway }) {
             </label>
             <p className={cx(mono, "whitespace-normal")}>{t(`hint.${providerId}`)}</p>
             {providerId === "custom" ? (
-              <div className="grid grid-cols-1 gap-3 min-[921px]:grid-cols-2">
+              <div className="grid grid-cols-1 gap-3 min-[850px]:grid-cols-2">
                 <label className={field}>
                   <span className="tracking-[0.02em]">{t("baseUrl")}</span>
                   <input
@@ -299,7 +299,7 @@ export function Settings({ gw }: { gw: ReadyGateway }) {
         </section>
 
         <details className={cx(panel, "group")}>
-          <summary className="mb-0 flex min-h-7 cursor-pointer list-none items-center justify-between text-[12px] font-semibold text-muted group-open:mb-3">
+          <summary className="mb-0 flex min-h-7 cursor-pointer list-none items-center justify-between text-[11px] font-semibold text-muted group-open:mb-3">
             {t("advanced")}
             <span className="inline-block h-[7px] w-[7px] rotate-45 border-r-[1.5px] border-b-[1.5px] border-muted transition-transform duration-200 group-open:rotate-[225deg] motion-reduce:transition-none" />
           </summary>

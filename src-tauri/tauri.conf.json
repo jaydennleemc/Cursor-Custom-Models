@@ -2,7 +2,7 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Cursor Gateway",
   "mainBinaryName": "Cursor Gateway",
-  "version": "1.0.11",
+  "version": "1.0.12",
   "identifier": "com.cursorgateway.app",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -14,10 +14,10 @@
     "windows": [
       {
         "title": "Cursor Gateway",
-        "width": 960,
-        "height": 660,
-        "minWidth": 900,
-        "minHeight": 620,
+        "width": 886,
+        "height": 609,
+        "minWidth": 831,
+        "minHeight": 572,
         "resizable": true,
         "maximizable": false,
         "center": true,

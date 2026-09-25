@@ -47,11 +47,11 @@ export function Rail({
         {status.patchedVersion &&
         status.cursorVersion &&
         status.patchedVersion !== status.cursorVersion ? (
-          <p className="m-0 pt-1 text-[12px] leading-snug text-warn">
+          <p className="m-0 pt-1 text-[11px] leading-snug text-warn">
             {t("cursorUpdated", { from: status.patchedVersion, to: status.cursorVersion })}
           </p>
         ) : patchedCount > 0 ? (
-          <p className="m-0 pt-1 text-[12px] leading-snug text-muted">{t("autoUpdateNote")}</p>
+          <p className="m-0 pt-1 text-[11px] leading-snug text-muted">{t("autoUpdateNote")}</p>
         ) : null}
       </div>
 
@@ -131,7 +131,7 @@ export function Rail({
         <h2 className={cx(headingSm, "shrink-0")}>{t("log")}</h2>
         <pre
           ref={logRef}
-          className="m-0 min-h-0 flex-1 overflow-auto font-mono text-[11px] leading-normal break-words whitespace-pre-wrap text-[#d7ccbb]"
+          className="m-0 min-h-0 flex-1 overflow-auto font-mono text-[10px] leading-normal break-words whitespace-pre-wrap text-[#d7ccbb]"
           aria-live="polite"
         >
           {log || t("logIdle")}

@@ -30,14 +30,14 @@ body,
 }
 
 html {
-  font-size: 13px;
+  font-size: 12px;
 }
 
 body {
   overflow: hidden;
 }
 
-@media (max-width: 920px) {
+@media (max-width: 849px) {
   body {
     overflow: auto;
   }
