@@ -13,7 +13,7 @@ On **Start** it:
 3. Appends `runtime/cm-runtime.js` with the user’s config baked in (`__CM_CONFIG_PLACEHOLDER__`).
 4. Updates `product.json` checksums so Cursor still loads the files.
 
-The injected runtime translates Cursor protobuf streams into OpenAI-compatible `POST /chat/completions` (SSE). Tools run **inside Cursor** (`read_file`, `write_file`, MCP, …). Gateway only maps OpenAI `tool_calls` onto Cursor’s local exec + UI protocol.
+The injected runtime translates Cursor protobuf streams into an OpenAI-compatible SSE call. It uses `POST /chat/completions` or `POST /responses`, matching the upstream: a base URL ending in either path is explicit, otherwise it tries Chat Completions and switches to the Responses API when that route is missing or the error says to. Tools run **inside Cursor** (`read_file`, `write_file`, MCP, …). Gateway only maps OpenAI `tool_calls` onto Cursor’s local exec + UI protocol.
 
 **Stop** copies the backups back. If Cursor overwrote a patched file (update), restore refuses unless **Force restore** is on.
 
@@ -51,7 +51,7 @@ npm run tauri build
 
 Do not claim an Agent/Chat protocol fix works unless `npm run test:runtime` is green.
 
-App version lives in `package.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`, and the Vite define `__APP_VERSION__` (declared in `vite.config.ts`, typed in `src/vite-env.d.ts`, rendered via `src/App.tsx`). `release.yml` has a `version-check` job that fails the release when the tag disagrees with those three files. Runtime protocol version is `g.__CURSOR_CM__.version` inside `cm-runtime.js` (currently `1.6.16`). The file banner `Cursor Custom Models Runtime vX.Y.Z` **must match** that exported version — T1 asserts this. App `1.0.x` and runtime `1.6.x` are independent; keep the three app-version files in sync with each other.
+App version lives in `package.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`, and the Vite define `__APP_VERSION__` (declared in `vite.config.ts`, typed in `src/vite-env.d.ts`, rendered via `src/App.tsx`). `release.yml` has a `version-check` job that fails the release when the tag disagrees with those three files. Runtime protocol version is `g.__CURSOR_CM__.version` inside `cm-runtime.js` (currently `1.6.18`). The file banner `Cursor Custom Models Runtime vX.Y.Z` **must match** that exported version — T1 asserts this. App `1.0.x` and runtime `1.6.x` are independent; keep the three app-version files in sync with each other.
 
 ## How the Agent path works
 
@@ -89,7 +89,7 @@ These were learned the hard way after 1.0.2, mostly while fixing the “Editing 
 5. **Upstream errors** on Agent must become `textDelta` + `turnEnded`, not a thrown error (no `turnEnded` → Connection failed).
 6. **Do not intercept** `StreamUnifiedChatWithToolsSSE` / Poll. Those are not the content-bearing channel.
 7. Connect-es consumer reads `{ message, header, trailer }`, not v2 `output`.
-8. Keep the tool-loop cap modest (`CFG.agentMaxToolRounds`, default 8 — wired through AppConfig and the Settings UI in 1.6.16). A broken tool result plus high rounds looks like infinite repeat; at the cap the runtime omits `tools` so the model must answer with text.
+8. Do not cap Agent/Chat tool rounds (removed in runtime 1.6.17). Keep sending `tools` until the model stops calling them. A broken or unknown tool result goes back as a tool error so the model can continue. If the upstream reply has no `content` but has reasoning, content parts, or `message.content`, that text is the visible reply — do not substitute `(model returned empty response)`.
 
 ## Symptom → likely cause
 
@@ -102,6 +102,7 @@ These were learned the hard way after 1.0.2, mostly while fixing the “Editing 
 | “You’re paused until usage resets” | Usage-gate unary bypass (`blockUsageGate`). |
 | “Get Cursor Pro for more Agent usage…” | `GetCurrentPeriodUsage.display_message` (1.6.13) or transport wrap missed after a Cursor update (`TRANSPORT_RE` vs 3.21.13+ `structuredLogService.warn` catch). |
 | CORS / GLM / Anthropic / loopback fail | Need the `:8117` proxy; Gateway process must stay running. |
+| Upstream only speaks the Responses API | Runtime 1.6.18 retries `POST /responses` after Chat Completions 404s or names that API, then keeps the choice for that base URL. |
 
 ## Changing the runtime
 

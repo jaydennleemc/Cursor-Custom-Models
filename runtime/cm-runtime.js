@@ -1,19 +1,28 @@
 /* ============================================================
- * Cursor Custom Models Runtime v1.6.16
+ * Cursor Custom Models Runtime v1.6.18
  * Injected at the end of three files (same code, separate processes):
  *   workbench.desktop.main.js / workbench.glass.main.js (renderer)
  *   extensionHostProcess.js (extension host — where HTTP actually terminates)
  * Intercepts the ConnectRPC transport and forwards Chat / Cmd+K / Agent
  * requests to the user-configured OpenAI-compatible API.
  *
- * v1.6.16: Bound the tool loop with CFG.agentMaxToolRounds (default 8):
- *          once the cap is reached the next upstream call omits `tools`,
- *          so the model must answer with text (T46). Never execute a tool
- *          whose JSON arguments fail to parse — push an error result back
- *          to the model instead of running it with `{}` (T47). The
- *          finish_reason=length truncation warning now also fires when
- *          tools are active. LIVE_CFG_KEYS trimmed to keys AppConfig
- *          actually defines (maxTokens / agentMaxToolRounds included).
+ * v1.6.18: Speak whichever upstream protocol is actually there. A base URL
+ *          ending in /responses or /chat/completions is explicit. Otherwise
+ *          try Chat Completions, and on 404/405 or a "use the Responses
+ *          API" error retry POST /responses once and remember the winner
+ *          for that host (T53–T56). Responses streams (output_text,
+ *          function_call arguments, reasoning) map onto the same events.
+ * v1.6.17: No tool-round cap. Agent and Chat keep `tools` on every upstream
+ *          call and run as many tool rounds as the model asks for (T46).
+ *          A reply with no content is no longer shown as an empty response
+ *          when the text arrived as reasoning, content parts, or
+ *          message.content (T48–T50). Unknown tool names get an error
+ *          result and the loop continues (T51).
+ * v1.6.16: Never execute a tool whose JSON arguments fail to parse — push
+ *          an error result back to the model instead of running it with
+ *          `{}` (T47). The finish_reason=length truncation warning also
+ *          fires when tools are active. LIVE_CFG_KEYS trimmed to keys
+ *          AppConfig actually defines (maxTokens included).
  * v1.6.15: Fix edit_file always failing with "filesystem not available" —
  *          the ESM extension host has no require(); resolve fs via
  *          process.getBuiltinModule (Node ≥20.16/22.3). execResultBag
@@ -825,14 +834,8 @@
    * ============================================================ */
   var AGENT_TOOLS_ON = CFG.agentTools !== false; // 默认开启
   var AGENT_TOOL_TIMEOUT = CFG.agentToolTimeoutMs || 120000;
-  // Agent/Chat tool-loop rounds cap (T46): default 8, read live from CFG so
-  // a hot-swapped profile takes effect on the next round. At the cap the
-  // upstream call omits `tools` → model must answer with text → loop ends.
-  function agentMaxRounds() {
-    var n = Number(CFG.agentMaxToolRounds);
-    if (!isFinite(n) || n < 1) return 8;
-    return Math.floor(n);
-  }
+  // No tool-round cap. Cursor calls tools until the model stops.
+  // AbortSignal still cancels the in-flight upstream fetch and the tool wait.
   var AGENT_HB_MS = CFG.agentHeartbeatMs > 0 ? CFG.agentHeartbeatMs : 2000;
   // OpenAI 函数名 → agent.v1 映射(仅保留有独立 exec 通道的工具: glob/semantic 无 result 通道已移除)
   var AGENT_TOOL_MAP = {
@@ -1802,7 +1805,6 @@
     "blockUsageGate",
     "agentTools",
     "agentToolTimeoutMs",
-    "agentMaxToolRounds",
     "agentContext",
   ];
   function logConfig(label, cfg) {
@@ -1816,13 +1818,14 @@
           (cfg.temperature == null ? "default" : cfg.temperature),
         "| tools=" + (cfg.agentTools === false ? "off" : "on"),
         "| intercept=" + (cfg.interceptMethods || []).length + " methods",
-        "| maxRounds=" + (cfg.agentMaxToolRounds || 8),
         "| blockUsageGate=" + (cfg.blockUsageGate === false ? "off" : "on"),
       );
     } catch (e) {
       /* noop */
     }
   }
+  // api root → "chat" | "responses". Cleared when baseUrl changes.
+  var _protoCache = {};
   function applyLiveCfg(next) {
     if (!next || typeof next !== "object") return;
     var prevModel = CFG.defaultModel;
@@ -1853,6 +1856,7 @@
         }
       }
     }
+    if (String(prevUrl) !== String(CFG.baseUrl)) _protoCache = {};
     if (changed) {
       log("live config →", CFG.baseUrl, "| model:", CFG.defaultModel);
       logConfig("profile switched →", CFG);
@@ -1876,30 +1880,245 @@
     return _cfgFetch;
   }
 
+  function trimSlash(s) {
+    return String(s || "").replace(/\/+$/, "");
+  }
+  function apiRoot(base) {
+    var b = trimSlash(base);
+    b = b.replace(/\/chat\/completions$/i, "");
+    b = b.replace(/\/responses$/i, "");
+    return trimSlash(b);
+  }
+  // "" = detect. "chat" / "responses" = the URL itself names the protocol.
+  function explicitProto(base) {
+    var b = trimSlash(base);
+    if (/\/responses$/i.test(b)) return "responses";
+    if (/\/chat\/completions$/i.test(b)) return "chat";
+    return "";
+  }
+  function upstreamHeaders() {
+    var headers = {
+      "content-type": "application/json",
+      authorization: "Bearer " + CFG.apiKey,
+    };
+    var extra = CFG.extraHeaders || {};
+    Object.keys(extra).forEach((k) => {
+      headers[k] = extra[k];
+    });
+    return headers;
+  }
+  function chatBody(messages, model, tools) {
+    var body = { model: model, messages: messages, stream: true };
+    if (tools && tools.length) body.tools = tools;
+    if (CFG.temperature != null) body.temperature = CFG.temperature;
+    body.max_tokens = CFG.maxTokens || 32768; // default 32768 for reasoning models (DeepSeek etc.)
+    return body;
+  }
+  function responsesTools(tools) {
+    var out = [];
+    if (!tools) return out;
+    for (var i = 0; i < tools.length; i++) {
+      var t = tools[i];
+      if (!t) continue;
+      var fn = t.function || t;
+      if (!fn.name) continue;
+      var item = { type: "function", name: String(fn.name) };
+      if (fn.description) item.description = fn.description;
+      if (fn.parameters) item.parameters = fn.parameters;
+      out.push(item);
+    }
+    return out;
+  }
+  function asText(v) {
+    if (v == null) return "";
+    if (typeof v === "string") return v;
+    try {
+      return JSON.stringify(v);
+    } catch (e) {
+      return String(v);
+    }
+  }
+  // Chat Completions messages → Responses API input + instructions.
+  function responsesBody(messages, model, tools) {
+    var instructions = [];
+    var input = [];
+    for (var i = 0; i < (messages || []).length; i++) {
+      var m = messages[i] || {};
+      var role = m.role || "user";
+      if (role === "system" || role === "developer") {
+        if (m.content) instructions.push(asText(m.content));
+        continue;
+      }
+      if (role === "tool") {
+        input.push({
+          type: "function_call_output",
+          call_id: String(m.tool_call_id || ""),
+          output: asText(m.content),
+        });
+        continue;
+      }
+      if (role === "assistant" && m.tool_calls && m.tool_calls.length) {
+        if (m.content) input.push({ role: "assistant", content: asText(m.content) });
+        for (var ti = 0; ti < m.tool_calls.length; ti++) {
+          var tc = m.tool_calls[ti] || {};
+          var fn = tc.function || {};
+          var args = fn.arguments == null ? "{}" : asText(fn.arguments);
+          input.push({
+            type: "function_call",
+            call_id: String(tc.id || ""),
+            name: String(fn.name || ""),
+            arguments: args,
+          });
+        }
+        continue;
+      }
+      input.push({
+        role: role === "assistant" ? "assistant" : "user",
+        content: asText(m.content),
+      });
+    }
+    if (!input.length) input.push({ role: "user", content: " " });
+    var body = { model: model, input: input, stream: true };
+    if (instructions.length) body.instructions = instructions.join("\n\n");
+    var rt = responsesTools(tools);
+    if (rt.length) body.tools = rt;
+    if (CFG.temperature != null) body.temperature = CFG.temperature;
+    body.max_output_tokens = CFG.maxTokens || 32768;
+    return body;
+  }
+  // Switch only when the route is missing or the error names the other API.
+  function otherProto(status, text, current) {
+    var t = String(text || "").toLowerCase();
+    var missing = status === 404 || status === 405 || status === 501;
+    if (current === "chat") {
+      if (missing || t.indexOf("responses") >= 0) return "responses";
+      return "";
+    }
+    if (missing || t.indexOf("chat/completions") >= 0) return "chat";
+    return "";
+  }
+  function errorResponse(status, text) {
+    try {
+      return new Response(text, {
+        status: status,
+        headers: { "content-type": "application/json" },
+      });
+    } catch (e) {
+      return {
+        ok: false,
+        status: status,
+        text: function () {
+          return Promise.resolve(text);
+        },
+        body: null,
+      };
+    }
+  }
   function callUpstream(messages, model, signal, tools) {
     return refreshCfg().then(() => {
-      var url = String(CFG.baseUrl).replace(/\/+$/, "") + "/chat/completions";
-      var body = { model: model, messages: messages, stream: true };
-      if (tools && tools.length) body.tools = tools;
-      if (CFG.temperature != null) body.temperature = CFG.temperature;
-      body.max_tokens = CFG.maxTokens || 32768; // default 32768 for reasoning models (DeepSeek etc.)
-      var headers = {
-        "content-type": "application/json",
-        authorization: "Bearer " + CFG.apiKey,
-      };
-      var extra = CFG.extraHeaders || {};
-      Object.keys(extra).forEach((k) => {
-        headers[k] = extra[k];
-      });
-      return fetch(url, {
-        method: "POST",
-        signal: signal,
-        headers: headers,
-        body: JSON.stringify(body),
+      var root = apiRoot(CFG.baseUrl);
+      var forced = explicitProto(CFG.baseUrl);
+      var prefer = forced || _protoCache[root] || "chat";
+      function post(proto) {
+        var url = root + (proto === "responses" ? "/responses" : "/chat/completions");
+        var body = proto === "responses" ? responsesBody(messages, model, tools) : chatBody(messages, model, tools);
+        return fetch(url, {
+          method: "POST",
+          signal: signal,
+          headers: upstreamHeaders(),
+          body: JSON.stringify(body),
+        });
+      }
+      return post(prefer).then((res) => {
+        if (res.ok) {
+          if (!forced) _protoCache[root] = prefer;
+          return res;
+        }
+        if (forced) return res;
+        return res.text().then((text) => {
+          var next = otherProto(res.status, text, prefer);
+          if (!next || (signal && signal.aborted)) return errorResponse(res.status, text);
+          log("upstream", prefer, "→", next, "after HTTP", res.status);
+          return post(next).then((res2) => {
+            if (res2.ok && !forced) _protoCache[root] = next;
+            return res2;
+          });
+        });
       });
     });
   }
 
+  // 把字符串 / 数字 / content parts 收成可见文本或 reasoning。
+  // 数组元素 {type:"text", text} 不能 String()，否则会变成 "[object Object]" 或被丢掉。
+  function collectParts(v, bag) {
+    if (v == null || v === false) return;
+    if (typeof v === "string") {
+      bag.text += v;
+      return;
+    }
+    if (typeof v === "number") {
+      bag.text += String(v);
+      return;
+    }
+    if (Array.isArray(v)) {
+      for (var i = 0; i < v.length; i++) collectParts(v[i], bag);
+      return;
+    }
+    if (typeof v !== "object") return;
+    var kind = v.type || v.kind || "";
+    if (
+      kind === "thinking" ||
+      kind === "reasoning" ||
+      kind === "redacted_thinking" ||
+      v.thought === true
+    ) {
+      var rt =
+        v.thinking || v.reasoning || v.reasoning_content || v.text || v.content || "";
+      if (typeof rt === "string") bag.reasoning += rt;
+      else {
+        var inner = { text: "", reasoning: "" };
+        collectParts(rt, inner);
+        bag.reasoning += inner.text + inner.reasoning;
+      }
+      return;
+    }
+    if (typeof v.text === "string") {
+      bag.text += v.text;
+      return;
+    }
+    if (typeof v.content === "string") {
+      bag.text += v.content;
+      return;
+    }
+    if (v.text != null) collectParts(v.text, bag);
+    else if (v.content != null) collectParts(v.content, bag);
+  }
+  function reasoningText(v) {
+    if (v == null || v === false || v === "") return "";
+    if (typeof v === "string") return v;
+    var bag = { text: "", reasoning: "" };
+    collectParts(v, bag);
+    return bag.text + bag.reasoning;
+  }
+  function noteToolCall(pending, tc) {
+    if (!tc) return;
+    var tidx = tc.index == null ? 0 : tc.index;
+    if (!pending[tidx]) pending[tidx] = { id: "", name: "", args: "" };
+    var slot = pending[tidx];
+    if (tc.id) slot.id = String(tc.id);
+    if (tc.name) slot.name = String(tc.name);
+    var fn = tc.function || {};
+    if (fn.name) slot.name = String(fn.name);
+    if (fn.arguments == null || fn.arguments === "") return;
+    if (typeof fn.arguments === "string") slot.args += fn.arguments;
+    else {
+      try {
+        slot.args += JSON.stringify(fn.arguments);
+      } catch (eArgs) {
+        /* noop */
+      }
+    }
+  }
   // 解析 SSE，yield {type:"text"|"reasoning", text}
   function sseIterator(res) {
     var reader = res.body.getReader();
@@ -1908,6 +2127,118 @@
     var done = false;
     var queued = []; // buffer for extra events when one SSE delta has both reasoning+content
     var _finishReason = null; // track finish_reason from SSE (e.g. 'length' = truncated by max_tokens)
+    var sawText = false;
+    var argStreamed = {};
+    function responsesEvents(j) {
+      var type = String(j.type || "");
+      if (!type || (type.indexOf("response.") !== 0 && type !== "error")) return null;
+      if (type === "response.output_text.delta") {
+        var text = j.delta != null ? j.delta : j.text;
+        if (text == null || text === "") return [];
+        sawText = true;
+        return [{ type: "text", text: String(text) }];
+      }
+      if (
+        type === "response.reasoning_text.delta" ||
+        type === "response.reasoning_summary_text.delta" ||
+        type === "response.reasoning.delta"
+      ) {
+        var rd = j.delta != null ? j.delta : j.text;
+        if (rd == null || rd === "") return [];
+        return [{ type: "reasoning", text: String(rd) }];
+      }
+      if (type === "response.output_item.added" || type === "response.output_item.done") {
+        var item = j.item || {};
+        if (item.type !== "function_call") return [];
+        var idx = j.output_index == null ? 0 : j.output_index;
+        var args = item.arguments || "";
+        if (type === "response.output_item.done" && argStreamed[idx]) args = "";
+        if (!item.name && !item.call_id && !args) return [];
+        return [
+          {
+            type: "toolCall",
+            toolCalls: [
+              {
+                index: idx,
+                id: item.call_id || "",
+                function: { name: item.name || "", arguments: args },
+              },
+            ],
+          },
+        ];
+      }
+      if (
+        type === "response.function_call_arguments.delta" ||
+        type === "response.function_call_arguments.done"
+      ) {
+        var idx2 = j.output_index == null ? 0 : j.output_index;
+        var deltaArgs = "";
+        if (type.indexOf("delta") >= 0) deltaArgs = j.delta || "";
+        else if (!argStreamed[idx2]) deltaArgs = j.arguments || "";
+        if (!deltaArgs) return [];
+        argStreamed[idx2] = true;
+        return [
+          {
+            type: "toolCall",
+            toolCalls: [
+              {
+                index: idx2,
+                id: "",
+                function: { name: "", arguments: String(deltaArgs) },
+              },
+            ],
+          },
+        ];
+      }
+      if (type === "response.incomplete") {
+        var reason = "";
+        try {
+          reason = j.response.incomplete_details.reason || "";
+        } catch (eInc) {
+          reason = "";
+        }
+        if (reason === "max_output_tokens") _finishReason = "length";
+        return [];
+      }
+      if (type === "response.completed" || type === "response.done") {
+        if (sawText) return [];
+        var extracted = "";
+        try {
+          var output = (j.response && j.response.output) || j.output || [];
+          for (var oi = 0; oi < output.length; oi++) {
+            var it = output[oi];
+            if (!it) continue;
+            if (it.type === "message" && it.content) {
+              var bagC = { text: "", reasoning: "" };
+              collectParts(it.content, bagC);
+              extracted += bagC.text;
+            } else if (typeof it.text === "string") extracted += it.text;
+          }
+        } catch (eDone) {
+          extracted = "";
+        }
+        if (!extracted) return [];
+        sawText = true;
+        return [{ type: "text", text: extracted }];
+      }
+      if (type === "error" || type === "response.failed") {
+        var errMsg = "";
+        try {
+          errMsg = j.message || (j.error && j.error.message) || "";
+        } catch (eErr) {
+          errMsg = "";
+        }
+        if (!errMsg) return [];
+        return [{ type: "text", text: String(errMsg) }];
+      }
+      return [];
+    }
+    function takeEvents(events) {
+      if (!events || !events.length) return null;
+      if (events.length === 1) return events[0];
+      for (var qi = 1; qi < events.length; qi++) queued.push(events[qi]);
+      return events[0];
+    }
     function parseDelta(payload) {
       var j = null;
       try {
@@ -1916,22 +2247,66 @@
         return null;
       }
       var choice = j.choices && j.choices[0];
-      if (choice && choice.finish_reason) _finishReason = choice.finish_reason;
-      var delta = choice && choice.delta;
-      if (!delta) return null;
+      if (!choice) return takeEvents(responsesEvents(j));
+      if (choice.finish_reason) _finishReason = choice.finish_reason;
+      var delta = choice.delta || null;
+      var message = choice.message || null;
+      if (!delta && !message) return null;
       var events = [];
-      var reasoning = delta.reasoning_content || delta.reasoning;
-      if (reasoning)
-        events.push({ type: "reasoning", text: String(reasoning) });
-      if (delta.tool_calls && delta.tool_calls.length)
-        events.push({ type: "toolCall", toolCalls: delta.tool_calls });
-      if (delta.content)
-        events.push({ type: "text", text: String(delta.content) });
-      if (!events.length) return null;
-      if (events.length === 1) return events[0];
-      // Multiple fields in one delta: return first, queue the rest
-      for (var i = 1; i < events.length; i++) queued.push(events[i]);
-      return events[0];
+      var reasoning =
+        reasoningText(delta && (delta.reasoning_content || delta.reasoning || delta.thinking)) ||
+        reasoningText(
+          message && (message.reasoning_content || message.reasoning || message.thinking),
+        );
+      var bag = { text: "", reasoning: "" };
+      var thought = false;
+      try {
+        thought = !!(
+          delta &&
+          delta.extra_content &&
+          delta.extra_content.google &&
+          delta.extra_content.google.thought
+        );
+      } catch (eTh) {
+        thought = false;
+      }
+      if (delta && delta.content != null && delta.content !== "")
+        collectParts(delta.content, bag);
+      if (!bag.text && message && message.content != null && message.content !== "")
+        collectParts(message.content, bag);
+      if (!bag.text && choice.text != null && choice.text !== "")
+        collectParts(choice.text, bag);
+      if (thought && bag.text) {
+        reasoning += bag.text;
+        bag.text = "";
+      }
+      reasoning += bag.reasoning;
+      if (reasoning) events.push({ type: "reasoning", text: reasoning });
+      var toolCalls =
+        (delta && delta.tool_calls) || (message && message.tool_calls) || null;
+      if (toolCalls && !Array.isArray(toolCalls)) toolCalls = [toolCalls];
+      if (!toolCalls || !toolCalls.length) {
+        var fc = (delta && delta.function_call) || (message && message.function_call);
+        if (fc && (fc.name || fc.arguments)) {
+          toolCalls = [
+            {
+              index: fc.index == null ? 0 : fc.index,
+              id: fc.id || "",
+              function: {
+                name: fc.name || "",
+                arguments: fc.arguments == null ? "" : fc.arguments,
+              },
+            },
+          ];
+        }
+      }
+      if (toolCalls && toolCalls.length)
+        events.push({ type: "toolCall", toolCalls: toolCalls });
+      if (bag.text) {
+        sawText = true;
+        events.push({ type: "text", text: bag.text });
+      }
+      return takeEvents(events);
     }
     function parseLine() {
       if (queued.length) return { value: queued.shift(), done: false };
@@ -1966,8 +2341,20 @@
           if (payload === "[DONE]") return false;
           try {
             var j = JSON.parse(payload);
-            var d = j.choices && j.choices[0] && j.choices[0].delta;
+            var ch0 = j.choices && j.choices[0];
+            var d = ch0 && ch0.delta;
+            var msg = ch0 && ch0.message;
             if (d && d.tool_calls && d.tool_calls.length) return true;
+            if (msg && msg.tool_calls && msg.tool_calls.length) return true;
+            if ((d && d.function_call) || (msg && msg.function_call)) return true;
+            var ty = j.type || "";
+            if (
+              (ty === "response.output_item.added" || ty === "response.output_item.done") &&
+              j.item &&
+              j.item.type === "function_call"
+            )
+              return true;
+            if (ty.indexOf("response.function_call_arguments") === 0) return true;
           } catch (e) {
             /* noop */
           }
@@ -2369,14 +2756,12 @@
         mcpTools = [];
       }
       var finalText = "";
+      var reasoningAll = "";
       var watermark = collected.length; // 工具结果只从 watermark 之后匹配
       var callSeq = 0;
-      var roundsDone = 0;
 
       for (var round = 0; ; round++) {
-        var maxRounds = agentMaxRounds();
-        var toolsThisRound = toolsOn && roundsDone < maxRounds;
-        var tools = toolsThisRound ? agentToolSchemas(mcpTools) : null;
+        var tools = toolsOn ? agentToolSchemas(mcpTools) : null;
         var res;
         try {
           res = yield* heartbeatWhile(
@@ -2464,6 +2849,7 @@
             var part = r.value;
             if (!part) continue;
             if (part.type === "reasoning") {
+              reasoningAll += part.text || "";
               var tmR = thinkMsg(part.text);
               if (tmR) yield tmR;
               continue;
@@ -2472,16 +2858,7 @@
               var tmTool = flushHeldThink();
               if (tmTool) yield tmTool;
               var tcs = part.toolCalls || [];
-              for (var ti = 0; ti < tcs.length; ti++) {
-                var tc = tcs[ti] || {};
-                var tidx = tc.index == null ? 0 : tc.index;
-                if (!pending[tidx])
-                  pending[tidx] = { id: "", name: "", args: "" };
-                if (tc.id) pending[tidx].id = String(tc.id);
-                var fn = tc.function || {};
-                if (fn.name) pending[tidx].name = String(fn.name);
-                if (fn.arguments) pending[tidx].args += String(fn.arguments);
-              }
+              for (var ti = 0; ti < tcs.length; ti++) noteToolCall(pending, tcs[ti]);
               continue;
             }
             if (part.type === "text" && part.text) {
@@ -2518,12 +2895,15 @@
           }
         }
 
-        var calls = Object.keys(pending)
+        var named = Object.keys(pending)
           .map((k) => pending[k])
-          .filter((c) => c.name && resolveAgentTool(c.name, mcpTools));
+          .filter((c) => c.name);
+        var calls = named.filter((c) => resolveAgentTool(c.name, mcpTools));
+        var unknown = named.filter((c) => !resolveAgentTool(c.name, mcpTools));
+        var willRunTools = toolsOn && named.length > 0;
         // 工具轮次的计划正文进 thinking, 不进回复, 避免 "Let me write…" 叠在最终答案前面。
-        if (calls.length && toolsThisRound) {
-          if (!roundChunks.length) {
+        if (willRunTools) {
+          if (!roundChunks.length && calls.length) {
             var tmP = thinkMsg(
               "Using " + calls.map((c) => c.name).join(", ") + "…",
             );
@@ -2536,26 +2916,37 @@
             if (am) yield am;
           }
         }
-        if (!calls.length || !toolsThisRound) break; // 纯文本回合, 或已达工具轮次上限 → 结束循环
-        roundsDone++;
+        if (!willRunTools) break;
 
         log(
           "agent round",
           round + 1,
           "| tool calls:",
-          calls.length,
-          "(" + calls.map((c) => c.name).join(",") + ")",
+          named.length,
+          "(" + named.map((c) => c.name).join(",") + ")",
         );
-        // assistant tool_calls 消息(OpenAI 格式)
+        // assistant tool_calls 消息(OpenAI 格式)。未知工具也要占一个 id，否则下一轮请求不合法。
         messages.push({
           role: "assistant",
           content: accText || null,
-          tool_calls: calls.map((c) => ({
-            id: c.id || "call_" + ++callSeq,
-            type: "function",
-            function: { name: c.name, arguments: c.args || "{}" },
-          })),
+          tool_calls: named.map((c) => {
+            if (!c.id) c.id = "call_" + ++callSeq;
+            return {
+              id: c.id,
+              type: "function",
+              function: { name: c.name, arguments: c.args || "{}" },
+            };
+          }),
         });
+        for (var ui = 0; ui < unknown.length; ui++) {
+          var uCall = unknown[ui];
+          log("unknown tool, skip exec:", uCall.name);
+          messages.push({
+            role: "tool",
+            tool_call_id: uCall.id,
+            content: JSON.stringify({ error: "unknown tool", name: uCall.name }),
+          });
+        }
 
         for (var ci = 0; ci < calls.length; ci++) {
           var c2 = calls[ci];
@@ -2691,7 +3082,8 @@
       }
 
       if (!finalText) {
-        finalText = "(model returned empty response)";
+        // 推理模型经常只回 reasoning_content。那就是回复本身，不要再贴一条空回复占位。
+        finalText = reasoningAll || "(model returned empty response)";
         var em2 = mk(ap.textField, { text: finalText });
         if (em2) yield em2;
       }
@@ -2805,27 +3197,24 @@
       } catch (eM2) {
         mcpTools = [];
       }
-      var tools = chatToolSchemas(EnumT, mcpTools); // schemas; per-round cap below
+      var tools = chatToolSchemas(EnumT, mcpTools);
       if (emitter && emitter.kind === "wrap") {
         var ss2 = maybeStreamStart(RespT);
         if (ss2) yield ss2;
       }
       var messages = info.messages.slice();
       var finalText = "";
+      var reasoningAll = "";
       var watermark = collected.length;
       var callSeq = 0;
-      var chatRoundsDone = 0;
       for (var round = 0; ; round++) {
-        var chatMaxRounds = agentMaxRounds();
-        var chatToolsThisRound = chatRoundsDone < chatMaxRounds;
-        var roundTools = chatToolsThisRound ? tools : null;
         var res;
         try {
           res = await callUpstream(
             messages,
             info.model,
             signal,
-            roundTools && roundTools.length ? roundTools : null,
+            tools && tools.length ? tools : null,
           );
         } catch (e) {
           if (e && e.name === "AbortError") throw e;
@@ -2865,22 +3254,14 @@
             var part = r.value;
             if (!part) continue;
             if (part.type === "reasoning") {
+              reasoningAll += part.text || "";
               var tm2 = makeRespMsg(emitter, RespT, null, part.text);
               if (tm2) yield tm2;
               continue;
             }
             if (part.type === "toolCall") {
               var tcs2 = part.toolCalls || [];
-              for (var ti2 = 0; ti2 < tcs2.length; ti2++) {
-                var tc2 = tcs2[ti2] || {};
-                var tidx2 = tc2.index == null ? 0 : tc2.index;
-                if (!pending[tidx2])
-                  pending[tidx2] = { id: "", name: "", args: "" };
-                if (tc2.id) pending[tidx2].id = String(tc2.id);
-                var fn2 = tc2.function || {};
-                if (fn2.name) pending[tidx2].name = String(fn2.name);
-                if (fn2.arguments) pending[tidx2].args += String(fn2.arguments);
-              }
+              for (var ti2 = 0; ti2 < tcs2.length; ti2++) noteToolCall(pending, tcs2[ti2]);
               continue;
             }
             if (part.type === "text" && part.text) {
@@ -2899,9 +3280,17 @@
             }
           }
         }
-        var calls = Object.keys(pending)
+        var named = Object.keys(pending)
           .map((k) => pending[k])
-          .filter((c) => c.name && resolveChatTool(c.name, EnumT, mcpTools));
+          .filter((c) => c.name);
+        var calls = named.filter(
+          (c) =>
+            c.name === "edit_file" || resolveChatTool(c.name, EnumT, mcpTools),
+        );
+        var unknown = named.filter(
+          (c) =>
+            c.name !== "edit_file" && !resolveChatTool(c.name, EnumT, mcpTools),
+        );
         // Warn if upstream truncated the response (finish_reason: length)
         var fr2 = it.finishReason && it.finishReason();
         if (fr2 === "length") {
@@ -2912,24 +3301,35 @@
           var amTrunc = makeRespMsg(emitter, RespT, truncWarn2, null);
           if (amTrunc) yield amTrunc;
         }
-        if (!calls.length || !chatToolsThisRound) break; // 纯文本回合, 或已达工具轮次上限
-        chatRoundsDone++;
+        if (!named.length) break;
         log(
           "chat tool round",
           round + 1,
           "| calls:",
-          calls.length,
-          "(" + calls.map((c) => c.name).join(",") + ")",
+          named.length,
+          "(" + named.map((c) => c.name).join(",") + ")",
         );
         messages.push({
           role: "assistant",
           content: accText || null,
-          tool_calls: calls.map((c) => ({
-            id: c.id || "chatcall_" + ++callSeq,
-            type: "function",
-            function: { name: c.name, arguments: c.args || "{}" },
-          })),
+          tool_calls: named.map((c) => {
+            if (!c.id) c.id = "chatcall_" + ++callSeq;
+            return {
+              id: c.id,
+              type: "function",
+              function: { name: c.name, arguments: c.args || "{}" },
+            };
+          }),
         });
+        for (var ui2 = 0; ui2 < unknown.length; ui2++) {
+          var uChat = unknown[ui2];
+          log("chat unknown tool, skip exec:", uChat.name);
+          messages.push({
+            role: "tool",
+            tool_call_id: uChat.id,
+            content: JSON.stringify({ error: "unknown tool", name: uChat.name }),
+          });
+        }
         for (var ci2 = 0; ci2 < calls.length; ci2++) {
           var c3 = calls[ci2];
           if (!c3.id) c3.id = "chatcall_" + ++callSeq;
@@ -3009,7 +3409,7 @@
         }
       }
       if (!finalText) {
-        finalText = "(model returned empty response)";
+        finalText = reasoningAll || "(model returned empty response)";
         var em3 = makeRespMsg(emitter, RespT, finalText, null);
         if (em3) yield em3;
       }
@@ -3086,6 +3486,7 @@
       var sent = 0;
       var fullText = "";
       var allText = "";
+      var reasoningAll = "";
       var EDIT_ID = 1;
       var selStart =
         (info.meta && info.meta.sel && info.meta.sel.startLineNumber) || 1;
@@ -3106,6 +3507,7 @@
           if (!part || !part.text) continue;
 
           if (part.type === "reasoning") {
+            reasoningAll += part.text || "";
             var thinkMsg = null;
             if (useCmdkEdit || useCmdkChat) {
               // CmdK 响应类型无 thinking 字段，跳过
@@ -3171,18 +3573,14 @@
       }
       // 空回复兜底: 补一条占位文本(agent 由 agentOutputLoop 自行处理)
       if (sent === 0 && !useCmdkEdit) {
+        var fallbackText = reasoningAll || "(model returned empty response)";
         if (useCmdkChat) {
           var cm2 = cmdkMsg("chatField", {
-            text: "(model returned empty response)",
+            text: fallbackText,
           });
           if (cm2) yield cm2;
         } else if (emitter) {
-          var m2 = makeRespMsg(
-            emitter,
-            RespT,
-            "(model returned empty response)",
-            null,
-          );
+          var m2 = makeRespMsg(emitter, RespT, fallbackText, null);
           if (m2) yield m2;
         }
       }
@@ -3279,7 +3677,7 @@
 
   g.__CURSOR_CM__ = {
     active: true,
-    version: "1.6.16",
+    version: "1.6.18",
     stats: stats,
     config: {
       baseUrl: CFG.baseUrl,

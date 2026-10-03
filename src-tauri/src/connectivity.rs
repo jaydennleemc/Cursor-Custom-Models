@@ -16,12 +16,28 @@ pub struct ConnectionTest {
     pub message: String,
 }
 
-pub fn completions_url(base_url: &str) -> Result<String> {
-    let base = base_url.trim().trim_end_matches('/');
-    if !(base.starts_with("http://") || base.starts_with("https://")) {
+fn api_root(base_url: &str) -> Result<String> {
+    let trimmed = base_url.trim().trim_end_matches('/');
+    if !(trimmed.starts_with("http://") || trimmed.starts_with("https://")) {
         return Err(AppError::msg("Base URL must start with http:// or https://"));
     }
-    Ok(format!("{base}/chat/completions"))
+    let lower = trimmed.to_ascii_lowercase();
+    let stripped = if lower.ends_with("/chat/completions") {
+        &trimmed[..trimmed.len() - "/chat/completions".len()]
+    } else if lower.ends_with("/responses") {
+        &trimmed[..trimmed.len() - "/responses".len()]
+    } else {
+        trimmed
+    };
+    Ok(stripped.trim_end_matches('/').to_string())
+}
+
+pub fn completions_url(base_url: &str) -> Result<String> {
+    Ok(format!("{}/chat/completions", api_root(base_url)?))
+}
+
+pub fn responses_url(base_url: &str) -> Result<String> {
+    Ok(format!("{}/responses", api_root(base_url)?))
 }
 
 pub fn resolve_model(config: &AppConfig) -> String {
@@ -82,7 +98,26 @@ pub fn test_connection(config: &AppConfig) -> Result<ConnectionTest> {
     if chat.ok || chat.status == 0 || chat.status == 401 || chat.status == 403 {
         return Ok(chat);
     }
-    if !matches!(chat.status, 404 | 405 | 501) {
+    let chat_missing = matches!(chat.status, 404 | 405 | 501);
+    let mentions_responses = chat.message.to_ascii_lowercase().contains("responses");
+    if chat_missing || mentions_responses {
+        let responses = probe_responses_head(
+            &client,
+            &responses_url(&config.base_url)?,
+            key,
+            &model,
+            &config.extra_headers,
+        )?;
+        if responses.ok
+            || responses.status == 0
+            || responses.status == 401
+            || responses.status == 403
+            || !matches!(responses.status, 404 | 405 | 501)
+        {
+            return Ok(responses);
+        }
+    }
+    if !chat_missing {
         return Ok(chat);
     }
     probe_models(
@@ -154,6 +189,22 @@ fn probe_models(
     })
 }
 
+fn probe_responses_head(
+    client: &reqwest::blocking::Client,
+    url: &str,
+    api_key: &str,
+    model: &str,
+    extra_headers: &std::collections::HashMap<String, String>,
+) -> Result<ConnectionTest> {
+    let body = serde_json::json!({
+        "model": model,
+        "input": "ping",
+        "max_output_tokens": 1,
+        "stream": true
+    });
+    probe_stream(client, url, api_key, model, extra_headers, body, "/responses")
+}
+
 fn probe_chat_head(
     client: &reqwest::blocking::Client,
     url: &str,
@@ -167,6 +218,26 @@ fn probe_chat_head(
         "max_tokens": 1,
         "stream": true
     });
+    probe_stream(
+        client,
+        url,
+        api_key,
+        model,
+        extra_headers,
+        body,
+        "/chat/completions",
+    )
+}
+
+fn probe_stream(
+    client: &reqwest::blocking::Client,
+    url: &str,
+    api_key: &str,
+    model: &str,
+    extra_headers: &std::collections::HashMap<String, String>,
+    body: serde_json::Value,
+    route_label: &str,
+) -> Result<ConnectionTest> {
     let started = Instant::now();
     let sent = apply_headers(client.post(url), api_key, extra_headers)
         .header("content-type", "application/json")
@@ -207,7 +278,7 @@ fn probe_chat_head(
         latency_ms,
         status,
         model: model.to_string(),
-        message: format!("Connected · {latency_ms}ms · {model} · /chat/completions"),
+        message: format!("Connected · {latency_ms}ms · {model} · {route_label}"),
     })
 }
 
@@ -360,7 +431,7 @@ mod tests {
         let server = Server::http("127.0.0.1:0").unwrap();
         let port = server.server_addr().to_ip().unwrap().port();
         thread::spawn(move || {
-            for request in server.incoming_requests().take(2) {
+            for request in server.incoming_requests().take(3) {
                 let url = request.url().to_string();
                 if url.contains("/models") {
                     let _ = request.respond(
@@ -383,6 +454,38 @@ mod tests {
         assert!(result.ok, "{}", result.message);
         assert_eq!(result.status, 200);
         assert!(result.message.contains("/models"), "{}", result.message);
+    }
+
+    #[test]
+    fn chat_404_uses_responses_when_that_route_exists() {
+        let server = Server::http("127.0.0.1:0").unwrap();
+        let port = server.server_addr().to_ip().unwrap().port();
+        thread::spawn(move || {
+            for request in server.incoming_requests().take(2) {
+                let url = request.url().to_string();
+                if url.contains("/responses") {
+                    let _ = request.respond(
+                        Response::from_string("data: {\"type\":\"response.output_text.delta\"}\n\n")
+                            .with_status_code(StatusCode(200)),
+                    );
+                } else {
+                    let _ = request.respond(
+                        Response::from_string(
+                            r#"{"error":{"message":"only supported in v1/responses"}}"#,
+                        )
+                        .with_status_code(StatusCode(404)),
+                    );
+                }
+            }
+        });
+        let mut cfg = AppConfig::default();
+        cfg.base_url = format!("http://127.0.0.1:{port}/v1");
+        cfg.api_key = "sk-test".into();
+        cfg.default_model = "hy3-free".into();
+        let result = test_connection(&cfg).unwrap();
+        assert!(result.ok, "{}", result.message);
+        assert_eq!(result.status, 200);
+        assert!(result.message.contains("/responses"), "{}", result.message);
     }
 
     #[test]

@@ -650,12 +650,52 @@ const AgentServerMsgT = makeType("agent.v1.AgentServerMessage", [
   },
 ]);
 
+function sseDataLine(s) {
+  if (s && s.response) return `data: ${JSON.stringify(s.response)}\n\n`;
+  const ch = {};
+  if (Object.prototype.hasOwnProperty.call(s, "delta")) ch.delta = s.delta;
+  if (s.message) ch.message = s.message;
+  if (s.finish) ch.finish_reason = s.finish;
+  return `data: ${JSON.stringify({ choices: [ch] })}\n\n`;
+}
+
+let responsesOnly = false;
+
 // ---------- Mock OpenAI 兼容 SSE 服务器 ----------
 const liveRes = new Set(); // 跟踪活跃响应, 退出前销毁避免 libuv 断言
 const server = http.createServer((req, res) => {
   liveRes.add(res);
   res.on("close", () => liveRes.delete(res));
-  if (req.method === "POST" && req.url.endsWith("/chat/completions")) {
+  if (
+    req.method === "POST" &&
+    req.url.endsWith("/chat/completions") &&
+    responsesOnly
+  ) {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      try {
+        lastRequestBody = JSON.parse(body);
+        requestBodies.push(lastRequestBody);
+      } catch (e) {
+        /* noop */
+      }
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          error: {
+            message:
+              "This model is only supported in v1/responses and not in v1/chat/completions.",
+          },
+        }),
+      );
+    });
+    return;
+  }
+  if (
+    req.method === "POST" &&
+    (req.url.endsWith("/chat/completions") || req.url.endsWith("/responses"))
+  ) {
     let body = "";
     req.on("data", (c) => (body += c));
     req.on("end", async () => {
@@ -686,9 +726,7 @@ const server = http.createServer((req, res) => {
           for (const s of script) {
             if (res.destroyed || res.writableEnded) return; // 客户端abort后停止写入, 避免write-after-abort
             try {
-              const chSlow = { delta: s.delta };
-              if (s.finish) chSlow.finish_reason = s.finish;
-              res.write(`data: ${JSON.stringify({ choices: [chSlow] })}\n\n`);
+              res.write(sseDataLine(s));
             } catch (e) {
               return;
             }
@@ -704,11 +742,7 @@ const server = http.createServer((req, res) => {
         })();
         return;
       }
-      for (const s of script) {
-        const ch = { delta: s.delta };
-        if (s.finish) ch.finish_reason = s.finish;
-        res.write(`data: ${JSON.stringify({ choices: [ch] })}\n\n`);
-      }
+      for (const s of script) res.write(sseDataLine(s));
       res.write("data: [DONE]\n\n");
       res.end();
     });
@@ -2835,8 +2869,7 @@ async function runTests(T) {
       (tool45 && tool45.content.slice(0, 120)),
   );
 
-  // T46: agentMaxToolRounds=1 — 达到工具轮次上限后停止执行工具。
-  //     模型连续两轮都要调 edit_file: 第一轮必须执行, 第二轮必须不执行。
+  // T46: 不限制工具回合。旧配置 agentMaxToolRounds=1 也必须两轮都执行。
   const t46Path = "/tmp/cm-rounds-t46-" + process.pid + ".txt";
   fs.writeFileSync(t46Path, "orig", "utf8");
   sseQueue = [
@@ -2897,7 +2930,7 @@ async function runTests(T) {
     null,
     null,
     {},
-    oneMsg(mkAgentReq("conv-t46", "回合上限")),
+    oneMsg(mkAgentReq("conv-t46", "不限制回合")),
   );
   const srv46 = await collect(r.message);
   const inners46 = srv46.map(agentInner);
@@ -2905,6 +2938,13 @@ async function runTests(T) {
     (x) => x && x.case === "toolCallCompleted",
   );
   const turn46 = inners46.filter((x) => x && x.case === "turnEnded");
+  const text46 = inners46
+    .filter((x) => x && x.case === "textDelta")
+    .map((x) => x.value.text)
+    .join("");
+  const toolsSent46 = requestBodies
+    .slice(b46)
+    .every((b) => Array.isArray(b.tools) && b.tools.length > 0);
   let disk46 = null;
   try {
     disk46 = fs.readFileSync(t46Path, "utf8");
@@ -2917,17 +2957,23 @@ async function runTests(T) {
     /* noop */
   }
   T(
-    "T46 agentMaxToolRounds=1 工具轮次有界",
-    completed46.length === 1 &&
+    "T46 工具回合不设上限",
+    completed46.length === 2 &&
       turn46.length === 1 &&
-      disk46 === "one" &&
-      requestBodies.length - b46 === 2,
+      disk46 === "two" &&
+      text46 === "done" &&
+      toolsSent46 &&
+      requestBodies.length - b46 === 3,
     "completed=" +
       completed46.length +
       " turn=" +
       turn46.length +
       " disk=" +
       JSON.stringify(disk46) +
+      " text=" +
+      JSON.stringify(text46) +
+      " tools=" +
+      toolsSent46 +
       " upstream=" +
       (requestBodies.length - b46),
   );
@@ -3012,4 +3058,388 @@ async function runTests(T) {
       " toolMsg=" +
       (tool47 && tool47.content.slice(0, 120)),
   );
+
+  // T48: 只有 reasoning_content、没有 content — 可见回复用推理文本，不是空回复占位。
+  sseScript = [{ delta: { reasoning_content: "最终答案在思考里" } }];
+  r = await wrapped.stream(
+    svcAgent,
+    mAgentRun,
+    null,
+    null,
+    {},
+    oneMsg(mkAgentReq("conv-t48", "只思考")),
+  );
+  const inners48 = (await collect(r.message)).map(agentInner);
+  const text48 = inners48
+    .filter((x) => x && x.case === "textDelta")
+    .map((x) => x.value.text)
+    .join("");
+  const think48 = inners48
+    .filter((x) => x && x.case === "thinkingDelta")
+    .map((x) => x.value.text)
+    .join("");
+  T(
+    "T48 reasoning-only 作为可见回复",
+    text48 === "最终答案在思考里" &&
+      think48.indexOf("最终答案在思考里") >= 0 &&
+      text48.indexOf("empty response") < 0 &&
+      inners48.filter((x) => x && x.case === "turnEnded").length === 1,
+    JSON.stringify(text48),
+  );
+
+  // T49: content parts 数组不能被 String() 成 [object Object]。
+  sseScript = [
+    {
+      delta: {
+        content: [
+          { type: "text", text: "段落" },
+          { type: "text", text: "甲" },
+        ],
+      },
+    },
+  ];
+  r = await wrapped.stream(
+    svcAgent,
+    mAgentRun,
+    null,
+    null,
+    {},
+    oneMsg(mkAgentReq("conv-t49", "parts")),
+  );
+  const text49 = (await collect(r.message))
+    .map(agentInner)
+    .filter((x) => x && x.case === "textDelta")
+    .map((x) => x.value.text)
+    .join("");
+  T(
+    "T49 content parts 拼成文本",
+    text49 === "段落甲",
+    JSON.stringify(text49),
+  );
+
+  // T50: 没有 delta，正文在 message.content（部分网关的非流式块）。
+  sseScript = [{ message: { role: "assistant", content: "来自message" } }];
+  r = await wrapped.stream(
+    svcAgent,
+    mAgentRun,
+    null,
+    null,
+    {},
+    oneMsg(mkAgentReq("conv-t50", "message")),
+  );
+  const text50 = (await collect(r.message))
+    .map(agentInner)
+    .filter((x) => x && x.case === "textDelta")
+    .map((x) => x.value.text)
+    .join("");
+  T(
+    "T50 message.content 可见",
+    text50 === "来自message",
+    JSON.stringify(text50),
+  );
+
+  // T51: 未知工具名不结束回合。错误回传模型，下一轮文本成为回复。
+  sseQueue = [
+    [
+      {
+        delta: {
+          tool_calls: [
+            {
+              index: 0,
+              id: "call_unknown",
+              type: "function",
+              function: { name: "not_a_tool", arguments: "{}" },
+            },
+          ],
+        },
+      },
+    ],
+    [{ delta: { content: "改用文本" } }],
+  ];
+  const b51 = requestBodies.length;
+  r = await wrapped.stream(
+    svcAgent,
+    mAgentRun,
+    null,
+    null,
+    {},
+    oneMsg(mkAgentReq("conv-t51", "未知工具")),
+  );
+  const inners51 = (await collect(r.message)).map(agentInner);
+  const text51 = inners51
+    .filter((x) => x && x.case === "textDelta")
+    .map((x) => x.value.text)
+    .join("");
+  const body51 = requestBodies[b51 + 1] || {};
+  const tool51 =
+    body51.messages && body51.messages.find((m) => m.role === "tool");
+  T(
+    "T51 未知工具回错后继续",
+    text51 === "改用文本" &&
+      text51.indexOf("empty response") < 0 &&
+      !inners51.find((x) => x && x.case === "toolCallStarted") &&
+      requestBodies.length - b51 === 2 &&
+      !!tool51 &&
+      /unknown tool/.test(tool51.content) &&
+      inners51.filter((x) => x && x.case === "turnEnded").length === 1,
+    "text=" +
+      JSON.stringify(text51) +
+      " upstream=" +
+      (requestBodies.length - b51) +
+      " tool=" +
+      (tool51 && tool51.content),
+  );
+
+  // T52: Chat 通道只有 reasoning 时，可见文本是推理内容。
+  sseScript = [{ delta: { reasoning_content: "只有思考" } }];
+  r = await wrapped.stream(svcChat, mUnified, null, null, {}, oneMsg(chatReq));
+  const msgs52 = await collect(r.message);
+  const think52 = msgs52.find((m) => m && m.thinking instanceof ThinkingT);
+  const textMsg52 = msgs52.find((m) => m && m.text);
+  T(
+    "T52 Chat reasoning-only 作为可见回复",
+    !!think52 &&
+      think52.thinking.text === "只有思考" &&
+      !!textMsg52 &&
+      textMsg52.text === "只有思考" &&
+      textMsg52.text.indexOf("empty response") < 0,
+    JSON.stringify(msgs52.map((m) => (m && (m.text || (m.thinking && m.thinking.text))) || "")),
+  );
+
+  function wrapCfg(extra) {
+    return new Function(
+      runtimeSrc.replace(
+        JSON.stringify(cfg),
+        JSON.stringify({ ...cfg, ...(extra || {}) }),
+      ) + "\n;return globalThis.__CURSOR_CM__.wrap;",
+    )()(origTransport);
+  }
+
+  // T53: /chat/completions 404 且错误指向 Responses API → 同一回合改走 /responses，并记住协议。
+  responsesOnly = true;
+  try {
+    sseQueue = [
+      [{ response: { type: "response.output_text.delta", delta: "来自responses" } }],
+      [{ response: { type: "response.output_text.delta", delta: "第二次" } }],
+    ];
+    const wrap53 = wrapCfg();
+    const b53 = requestBodies.length;
+    r = await wrap53.stream(
+      svcAgent,
+      mAgentRun,
+      null,
+      null,
+      {},
+      oneMsg(mkAgentReq("conv-t53", "探测协议")),
+    );
+    const text53 = (await collect(r.message))
+      .map(agentInner)
+      .filter((x) => x && x.case === "textDelta")
+      .map((x) => x.value.text)
+      .join("");
+    r = await wrap53.stream(
+      svcAgent,
+      mAgentRun,
+      null,
+      null,
+      {},
+      oneMsg(mkAgentReq("conv-t53b", "记住协议")),
+    );
+    await collect(r.message);
+    const bodies53 = requestBodies.slice(b53);
+    T(
+      "T53 Chat 404 后改走 Responses 并记住",
+      text53 === "来自responses" &&
+        bodies53.length === 3 &&
+        Array.isArray(bodies53[0].messages) &&
+        !bodies53[0].input &&
+        Array.isArray(bodies53[1].input) &&
+        !bodies53[1].messages &&
+        bodies53[1].input.some((item) => item.content === "探测协议") &&
+        typeof bodies53[1].max_output_tokens === "number" &&
+        Array.isArray(bodies53[2].input) &&
+        !bodies53[2].messages,
+      "text=" +
+        JSON.stringify(text53) +
+        " n=" +
+        bodies53.length +
+        " kinds=" +
+        bodies53
+          .map((b) => (b.input ? "responses" : b.messages ? "chat" : "?"))
+          .join(","),
+    );
+  } finally {
+    responsesOnly = false;
+  }
+
+  // T54: Base URL 以 /responses 结尾时直接走 Responses，工具参数不重复拼接。
+  const t54Path = "/tmp/cm-responses-t54-" + process.pid + ".txt";
+  fs.writeFileSync(t54Path, "orig", "utf8");
+  const t54Args = JSON.stringify({
+    path: t54Path,
+    old_string: "orig",
+    new_string: "next",
+  });
+  sseQueue = [
+    [
+      {
+        response: {
+          type: "response.output_item.added",
+          output_index: 0,
+          item: {
+            type: "function_call",
+            call_id: "call_r54",
+            name: "edit_file",
+            arguments: "",
+          },
+        },
+      },
+      {
+        response: {
+          type: "response.function_call_arguments.delta",
+          output_index: 0,
+          delta: t54Args,
+        },
+      },
+      {
+        response: {
+          type: "response.output_item.done",
+          output_index: 0,
+          item: {
+            type: "function_call",
+            call_id: "call_r54",
+            name: "edit_file",
+            arguments: t54Args,
+          },
+        },
+      },
+    ],
+    [
+      { response: { type: "response.reasoning_summary_text.delta", delta: "想" } },
+      { response: { type: "response.output_text.delta", delta: "改好了" } },
+    ],
+  ];
+  const wrap54 = wrapCfg({
+    baseUrl: `http://127.0.0.1:${PORT}/v1/responses`,
+  });
+  const b54 = requestBodies.length;
+  r = await wrap54.stream(
+    svcAgent,
+    mAgentRun,
+    null,
+    null,
+    {},
+    oneMsg(mkAgentReq("conv-t54", "改文件")),
+  );
+  const inners54 = (await collect(r.message)).map(agentInner);
+  const text54 = inners54
+    .filter((x) => x && x.case === "textDelta")
+    .map((x) => x.value.text)
+    .join("");
+  const think54 = inners54
+    .filter((x) => x && x.case === "thinkingDelta")
+    .map((x) => x.value.text)
+    .join("");
+  const bodies54 = requestBodies.slice(b54);
+  const follow54 = bodies54[1] || {};
+  const calls54 = (follow54.input || []).filter((item) => item.type === "function_call");
+  const outs54 = (follow54.input || []).filter(
+    (item) => item.type === "function_call_output",
+  );
+  let disk54 = null;
+  try {
+    disk54 = fs.readFileSync(t54Path, "utf8");
+  } catch (e) {
+    /* noop */
+  }
+  try {
+    fs.unlinkSync(t54Path);
+  } catch (e) {
+    /* noop */
+  }
+  T(
+    "T54 Responses 工具回合",
+    disk54 === "next" &&
+      text54 === "改好了" &&
+      think54.indexOf("想") >= 0 &&
+      bodies54.length === 2 &&
+      !bodies54[0].messages &&
+      Array.isArray(bodies54[0].tools) &&
+      bodies54[0].tools.some((t) => t.name === "edit_file" && !t.function) &&
+      calls54.length === 1 &&
+      calls54[0].call_id === "call_r54" &&
+      calls54[0].arguments === t54Args &&
+      outs54.length === 1,
+    "disk=" +
+      JSON.stringify(disk54) +
+      " text=" +
+      JSON.stringify(text54) +
+      " n=" +
+      bodies54.length +
+      " calls=" +
+      calls54.length,
+  );
+
+  // T55: Base URL 以 /chat/completions 结尾时不重复拼接路径。
+  sseScript = [{ delta: { content: "仍走chat" } }];
+  const wrap55 = wrapCfg({
+    baseUrl: `http://127.0.0.1:${PORT}/v1/chat/completions`,
+  });
+  const b55 = requestBodies.length;
+  r = await wrap55.stream(
+    svcAgent,
+    mAgentRun,
+    null,
+    null,
+    {},
+    oneMsg(mkAgentReq("conv-t55", "chat路径")),
+  );
+  const text55 = (await collect(r.message))
+    .map(agentInner)
+    .filter((x) => x && x.case === "textDelta")
+    .map((x) => x.value.text)
+    .join("");
+  const body55 = requestBodies[b55] || {};
+  T(
+    "T55 显式 /chat/completions 路径",
+    text55 === "仍走chat" &&
+      Array.isArray(body55.messages) &&
+      !body55.input &&
+      requestBodies.length - b55 === 1,
+    "text=" + JSON.stringify(text55) + " keys=" + Object.keys(body55).join(","),
+  );
+
+  // T56: 只有 response.completed、没有 delta 时，正文从 output 里取出。
+  sseScript = [
+    {
+      response: {
+        type: "response.completed",
+        response: {
+          output: [
+            {
+              type: "message",
+              content: [{ type: "output_text", text: "整段" }],
+            },
+          ],
+        },
+      },
+    },
+  ];
+  const wrap56 = wrapCfg({
+    baseUrl: `http://127.0.0.1:${PORT}/v1/responses`,
+  });
+  r = await wrap56.stream(
+    svcAgent,
+    mAgentRun,
+    null,
+    null,
+    {},
+    oneMsg(mkAgentReq("conv-t56", "completed")),
+  );
+  const text56 = (await collect(r.message))
+    .map(agentInner)
+    .filter((x) => x && x.case === "textDelta")
+    .map((x) => x.value.text)
+    .join("");
+  T("T56 Responses completed 正文", text56 === "整段", JSON.stringify(text56));
 }
