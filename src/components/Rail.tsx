@@ -1,4 +1,5 @@
 import type { AppUpdate } from "../hooks/useAppUpdate";
+import type { CursorUpdateState } from "../hooks/useCursorUpdate";
 import type { ReadyGateway } from "../hooks/useGateway";
 import { btnGhost, btnQuit, btnStart, btnStop, card, cx, headingSm, mono, rail } from "../ui";
 import { BrandTitle } from "./BrandTitle";
@@ -9,10 +10,12 @@ export function Rail({
   gw,
   version,
   update,
+  cursorUpdate,
 }: {
   gw: ReadyGateway;
   version: string;
   update: AppUpdate;
+  cursorUpdate: CursorUpdateState;
 }) {
   const { status, patchedCount, busy, force, setForce, log, logRef, t } = gw;
 
@@ -24,8 +27,31 @@ export function Rail({
         <StatusLine
           ok={status.cursorFound}
           label={t("statusCursor")}
-          detail={status.cursorFound ? t("statusFound") : t("statusMissing")}
+          detail={
+            status.cursorFound
+              ? (status.cursorVersion ?? t("statusFound"))
+              : t("statusMissing")
+          }
         />
+        {cursorUpdate.offer?.available ? (
+          <div className="py-1.5">
+            <button
+              type="button"
+              className={cx(
+                "inline-flex w-fit cursor-pointer items-center gap-1.5 rounded-lg border border-copper/50 bg-transparent px-2.5 py-1 text-xs font-semibold text-copper-2",
+                "hover:bg-copper/10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-copper-2",
+              )}
+              onClick={() => void cursorUpdate.open()}
+            >
+              {t("updateCursor")}
+              {cursorUpdate.offer.latest ? (
+                <span className="font-mono text-[10px] font-medium">
+                  {cursorUpdate.offer.latest}
+                </span>
+              ) : null}
+            </button>
+          </div>
+        ) : null}
         <StatusLine
           ok={!status.cursorRunning}
           warn={status.cursorRunning}

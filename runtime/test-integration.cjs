@@ -97,7 +97,7 @@ function makeType(typeName, fieldDefs) {
     }
   }
   T.typeName = typeName;
-  T.fields = { byMember: () => members };
+  T.fields = { byMember: (n) => (n ? members.filter((m) => m.localName === n) : members) };
   return T;
 }
 
@@ -471,6 +471,71 @@ const McpToolCallT = makeType("agent.v1.McpToolCall", [
   { no: 1, name: "args", kind: "message", T: McpArgsT },
   { no: 2, name: "result", kind: "message", T: McpResultT },
 ]);
+// shell 工具往返类型 (v1.6.17: ShellArgs.parsing_result 是 Cursor 3.24
+// LocalShellExecutor 的硬性前置条件, 缺失时直接返回 spawnError)
+const ShellCommandT = makeType("agent.v1.ShellCommand", [
+  { no: 1, name: "full_text", kind: "scalar" },
+  { no: 2, name: "args", kind: "scalar", repeated: true },
+]);
+const ShellCommandParsingResultT = makeType(
+  "agent.v1.ShellCommandParsingResult",
+  [
+    { no: 1, name: "command", kind: "message", T: ShellCommandT },
+    { no: 2, name: "has_redirects", kind: "scalar" },
+    { no: 3, name: "has_command_substitution", kind: "scalar" },
+  ],
+);
+const ShellArgsT = makeType("agent.v1.ShellArgs", [
+  { no: 1, name: "command", kind: "scalar" },
+  { no: 2, name: "working_directory", kind: "scalar", opt: true },
+  { no: 3, name: "timeout", kind: "scalar", opt: true },
+  { no: 4, name: "tool_call_id", kind: "scalar" },
+  {
+    no: 8,
+    name: "parsing_result",
+    kind: "message",
+    T: ShellCommandParsingResultT,
+  },
+  { no: 12, name: "skip_approval", kind: "scalar", opt: true },
+  { no: 21, name: "conversation_id", kind: "scalar", opt: true },
+]);
+const ShellSuccessT = makeType("agent.v1.ShellSuccess", [
+  { no: 1, name: "command", kind: "scalar" },
+  { no: 2, name: "working_directory", kind: "scalar" },
+  { no: 3, name: "exit_code", kind: "scalar" },
+  { no: 4, name: "signal", kind: "scalar" },
+  { no: 5, name: "stdout", kind: "scalar" },
+  { no: 6, name: "stderr", kind: "scalar" },
+]);
+const ShellFailureT = makeType("agent.v1.ShellFailure", [
+  { no: 1, name: "command", kind: "scalar" },
+  { no: 2, name: "working_directory", kind: "scalar" },
+  { no: 3, name: "exit_code", kind: "scalar" },
+  { no: 4, name: "signal", kind: "scalar" },
+  { no: 5, name: "stdout", kind: "scalar" },
+  { no: 6, name: "stderr", kind: "scalar" },
+  { no: 7, name: "error", kind: "scalar" },
+]);
+const ShellResultT = makeType("agent.v1.ShellResult", [
+  {
+    no: 1,
+    name: "shell_success",
+    kind: "message",
+    T: ShellSuccessT,
+    oneof: "result",
+  },
+  {
+    no: 2,
+    name: "shell_failure",
+    kind: "message",
+    T: ShellFailureT,
+    oneof: "result",
+  },
+]);
+const ShellToolCallT = makeType("agent.v1.ShellToolCall", [
+  { no: 1, name: "args", kind: "message", T: ShellArgsT },
+  { no: 2, name: "result", kind: "message", T: ShellResultT },
+]);
 const AgentToolCallT = makeType("agent.v1.ToolCall", [
   {
     no: 8,
@@ -491,6 +556,13 @@ const AgentToolCallT = makeType("agent.v1.ToolCall", [
     name: "mcp_tool_call",
     kind: "message",
     T: McpToolCallT,
+    oneof: "tool",
+  },
+  {
+    no: 14,
+    name: "shell_tool_call",
+    kind: "message",
+    T: ShellToolCallT,
     oneof: "tool",
   },
 ]);
@@ -524,6 +596,13 @@ const ExecClientMessageT = makeType("agent.v1.ExecClientMessage", [
     name: "mcp_result",
     kind: "message",
     T: McpResultT,
+    oneof: "message",
+  },
+  {
+    no: 2,
+    name: "shell_result",
+    kind: "message",
+    T: ShellResultT,
     oneof: "message",
   },
 ]);
@@ -560,6 +639,13 @@ const ExecServerMessageT = makeType("agent.v1.ExecServerMessage", [
     oneof: "message",
   },
   { no: 11, name: "mcp_args", kind: "message", T: McpArgsT, oneof: "message" },
+  {
+    no: 2,
+    name: "shell_args",
+    kind: "message",
+    T: ShellArgsT,
+    oneof: "message",
+  },
 ]);
 const AgentClientMsgT = makeType("agent.v1.AgentClientMessage", [
   {
@@ -3442,4 +3528,109 @@ async function runTests(T) {
     .map((x) => x.value.text)
     .join("");
   T("T56 Responses completed 正文", text56 === "整段", JSON.stringify(text56));
+
+  // T57: agent run_terminal_cmd — ShellArgs 必须携带 parsing_result
+  //     (Cursor 3.24 LocalShellExecutor: 缺失时直接返回 spawnError
+  //      "Parsing result is required", 模型会因此判定终端损坏转投 web_fetch)
+  sseQueue = [
+    [
+      {
+        delta: {
+          tool_calls: [
+            {
+              index: 0,
+              id: "call_shell",
+              type: "function",
+              function: {
+                name: "run_terminal_cmd",
+                arguments: '{"command":"echo SHELL-OK","working_directory":"/tmp"}',
+              },
+            },
+          ],
+        },
+      },
+    ],
+    [{ delta: { content: "命令已执行" } }],
+  ];
+  const b57 = requestBodies.length;
+  r = await wrapped.stream(
+    svcAgent,
+    mAgentRun,
+    null,
+    null,
+    {},
+    (async function* () {
+      yield mkAgentReq("conv-t57", "跑个命令");
+      await new Promise((rs) => setTimeout(rs, 300));
+      yield new AgentClientMsgT({
+        message: {
+          case: "execClientMessage",
+          value: new ExecClientMessageT({
+            id: 1,
+            execId: "call_shell",
+            message: {
+              case: "shellResult",
+              value: new ShellResultT({
+                result: {
+                  case: "shellSuccess",
+                  value: new ShellSuccessT({
+                    command: "echo SHELL-OK",
+                    exitCode: 0,
+                    stdout: "SHELL-OK\n",
+                  }),
+                },
+              }),
+            },
+          }),
+        },
+      });
+    })(),
+  );
+  const srv57 = await collect(r.message);
+  const inners57 = srv57.map(agentInner);
+  const started57 = inners57.find((x) => x && x.case === "toolCallStarted");
+  const completed57 = inners57.find(
+    (x) => x && x.case === "toolCallCompleted",
+  );
+  const execMsg57 = srv57.find(
+    (m) => m.message && m.message.case === "execServerMessage",
+  );
+  const ex57 = execMsg57 && execMsg57.message.value.message;
+  const text57 = inners57
+    .filter((x) => x && x.case === "textDelta")
+    .map((x) => x.value.text)
+    .join("");
+  const body57 = requestBodies[b57 + 1] || {};
+  const tool57 =
+    body57.messages && body57.messages.find((m) => m.role === "tool");
+  T(
+    "T57 agent shell(exec 带 parsing_result+完整往返)",
+    !!started57 &&
+      started57.value.toolCall.tool.case === "shellToolCall" &&
+      !started57.value.toolCall.tool.value.result &&
+      !!ex57 &&
+      ex57.case === "shellArgs" &&
+      ex57.value instanceof ShellArgsT &&
+      ex57.value.command === "echo SHELL-OK" &&
+      ex57.value.workingDirectory === "/tmp" &&
+      ex57.value.toolCallId === "call_shell" &&
+      !!ex57.value.parsingResult &&
+      ex57.value.parsingResult instanceof ShellCommandParsingResultT &&
+      !!ex57.value.parsingResult.command &&
+      ex57.value.parsingResult.command.fullText === "echo SHELL-OK" &&
+      ex57.value.parsingResult.hasRedirects === false &&
+      ex57.value.parsingResult.hasCommandSubstitution === false &&
+      !!completed57 &&
+      completed57.value.toolCall.tool.case === "shellToolCall" &&
+      completed57.value.toolCall.tool.value.result instanceof ShellResultT &&
+      text57 === "命令已执行" &&
+      !!tool57 &&
+      tool57.content.includes("SHELL-OK"),
+    JSON.stringify({
+      inners: inners57.map((x) => x && x.case),
+      exec: ex57 && ex57.case,
+      parsing: !!(ex57 && ex57.value && ex57.value.parsingResult),
+      tool: tool57 && tool57.content.slice(0, 120),
+    }),
+  );
 }

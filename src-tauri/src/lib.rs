@@ -2,6 +2,7 @@ mod checksum;
 mod config;
 mod connectivity;
 mod cursor;
+mod cursor_update;
 mod error;
 mod log_server;
 mod patch;
@@ -346,6 +347,40 @@ fn open_config_dir() -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn check_cursor_update() -> cursor_update::CursorUpdate {
+    tauri::async_runtime::spawn_blocking(cursor_update::check)
+        .await
+        .unwrap_or_else(|_| cursor_update::CursorUpdate::none())
+}
+
+#[tauri::command]
+fn open_external(url: String) -> Result<(), String> {
+    let url = cursor_update::sanitize_download_url(&url)?;
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg(&url)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("cmd")
+            .args(["/C", "start", "", &url])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        Command::new("xdg-open")
+            .arg(&url)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
 fn open_log_file() -> Result<String, String> {
     let path = config::log_file_path()?;
     // Ensure the file exists so the reveal command doesn't fail
@@ -403,6 +438,8 @@ pub fn run() {
             open_log_file,
             open_cursor,
             quit_cursor,
+            check_cursor_update,
+            open_external,
             test_connection,
             list_profiles,
             save_profile,

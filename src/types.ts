@@ -56,6 +56,13 @@ export interface OpResult {
   log: string[];
 }
 
+export interface CursorUpdate {
+  available: boolean;
+  current: string | null;
+  latest: string | null;
+  url: string | null;
+}
+
 export interface ConnectionTest {
   ok: boolean;
   latencyMs: number;

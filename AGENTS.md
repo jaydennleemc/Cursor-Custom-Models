@@ -103,6 +103,7 @@ These were learned the hard way after 1.0.2, mostly while fixing the “Editing 
 | “Get Cursor Pro for more Agent usage…” | `GetCurrentPeriodUsage.display_message` (1.6.13) or transport wrap missed after a Cursor update (`TRANSPORT_RE` vs 3.21.13+ `structuredLogService.warn` catch). |
 | CORS / GLM / Anthropic / loopback fail | Need the `:8117` proxy; Gateway process must stay running. |
 | Upstream only speaks the Responses API | Runtime 1.6.18 retries `POST /responses` after Chat Completions 404s or names that API, then keeps the choice for that base URL. |
+| Model says “The terminal tool is broken” / shell instant empty error | `ShellArgs.parsing_result` missing — Cursor 3.24 `LocalShellExecutor` returns spawnError "Parsing result is required" before running anything. `run_terminal_cmd`'s `execInit` in `AGENT_TOOL_MAP` must always set it (T57). |
 
 ## Changing the runtime
 

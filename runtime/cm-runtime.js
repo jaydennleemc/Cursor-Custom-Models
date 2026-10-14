@@ -12,6 +12,8 @@
  *          API" error retry POST /responses once and remember the winner
  *          for that host (T53–T56). Responses streams (output_text,
  *          function_call arguments, reasoning) map onto the same events.
+ *          run_terminal_cmd still always sets ShellArgs.parsing_result
+ *          (Cursor 3.24 LocalShellExecutor; T57).
  * v1.6.17: No tool-round cap. Agent and Chat keep `tools` on every upstream
  *          call and run as many tool rounds as the model asks for (T46).
  *          A reply with no content is no longer shown as an empty response
@@ -878,6 +880,26 @@
       caseName: "shellToolCall",
       execCase: "shellArgs",
       argKeys: { command: "command", workingDirectory: "working_directory" },
+      // Cursor 3.24 LocalShellExecutor hard-requires ShellArgs.parsing_result:
+      // without it the client answers spawnError "Parsing result is required"
+      // before running anything. An empty parsing message with the raw command
+      // as fullText is enough (native shell-stream sends the same shape).
+      execInit: function (ArgsT, args) {
+        var pf = findFieldDeep(ArgsT, "parsingResult");
+        if (!pf || !pf.T) return null;
+        var init = { hasRedirects: false, hasCommandSubstitution: false };
+        var cf = null;
+        try {
+          cf = pf.T.fields.byMember("command")[0];
+        } catch (e) {}
+        if (cf && cf.T) {
+          init.command = new cf.T({
+            fullText: String(args.command || ""),
+            args: [],
+          });
+        }
+        return { parsingResult: new pf.T(init) };
+      },
     },
     web_fetch: {
       caseName: "fetchToolCall",
@@ -1751,6 +1773,15 @@
             var df = findFieldDeep(ArgsT, k);
             if (df.repeated && !Array.isArray(v)) v = [v];
             argsPartial[k] = v;
+          }
+        }
+        var extras = entry.execInit ? entry.execInit(ArgsT, argsObj) : null;
+        if (extras) {
+          for (var xk in extras) {
+            if (extras[xk] === undefined || extras[xk] === null) continue;
+            var xf = findFieldDeep(ArgsT, xk);
+            if (xf && argsPartial[xf.localName] === undefined)
+              argsPartial[xf.localName] = extras[xk];
           }
         }
       }
