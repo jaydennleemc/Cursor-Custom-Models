@@ -51,7 +51,7 @@ npm run tauri build
 
 Do not claim an Agent/Chat protocol fix works unless `npm run test:runtime` is green.
 
-App version lives in `package.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`, and the Vite define `__APP_VERSION__` (declared in `vite.config.ts`, typed in `src/vite-env.d.ts`, rendered via `src/App.tsx`). `release.yml` has a `version-check` job that fails the release when the tag disagrees with those three files. Runtime protocol version is `g.__CURSOR_CM__.version` inside `cm-runtime.js` (currently `1.6.16`). The file banner `Cursor Custom Models Runtime vX.Y.Z` **must match** that exported version — T1 asserts this. App `1.0.x` and runtime `1.6.x` are independent; keep the three app-version files in sync with each other.
+App version lives in `package.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`, and the Vite define `__APP_VERSION__` (declared in `vite.config.ts`, typed in `src/vite-env.d.ts`, rendered via `src/App.tsx`). `release.yml` has a `version-check` job that fails the release when the tag disagrees with those three files. Runtime protocol version is `g.__CURSOR_CM__.version` inside `cm-runtime.js` (currently `1.6.17`). The file banner `Cursor Custom Models Runtime vX.Y.Z` **must match** that exported version — T1 asserts this. App `1.0.x` and runtime `1.6.x` are independent; keep the three app-version files in sync with each other.
 
 ## How the Agent path works
 
@@ -102,6 +102,7 @@ These were learned the hard way after 1.0.2, mostly while fixing the “Editing 
 | “You’re paused until usage resets” | Usage-gate unary bypass (`blockUsageGate`). |
 | “Get Cursor Pro for more Agent usage…” | `GetCurrentPeriodUsage.display_message` (1.6.13) or transport wrap missed after a Cursor update (`TRANSPORT_RE` vs 3.21.13+ `structuredLogService.warn` catch). |
 | CORS / GLM / Anthropic / loopback fail | Need the `:8117` proxy; Gateway process must stay running. |
+| Model says “The terminal tool is broken” / shell instant empty error | `ShellArgs.parsing_result` missing — Cursor 3.24 `LocalShellExecutor` returns spawnError "Parsing result is required" before running anything. `run_terminal_cmd`'s `execInit` in `AGENT_TOOL_MAP` must always set it (T48). |
 
 ## Changing the runtime
 
