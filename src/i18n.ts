@@ -160,6 +160,7 @@ const en: Dict = {
   cancel: "Cancel",
   deleting: "Deleting…",
 
+  updateCursor: "Update Cursor",
   updateTo: "Update to {version}",
   updateDownloading: "Downloading…",
   updateDownloadingPercent: "Downloading {percent}%",
@@ -316,6 +317,7 @@ const zhCN: Dict = {
   cancel: "取消",
   deleting: "删除中…",
 
+  updateCursor: "更新 Cursor",
   updateTo: "更新到 {version}",
   updateDownloading: "正在下载…",
   updateDownloadingPercent: "正在下载 {percent}%",
@@ -472,6 +474,7 @@ const zhTW: Dict = {
   cancel: "取消",
   deleting: "刪除中…",
 
+  updateCursor: "更新 Cursor",
   updateTo: "更新到 {version}",
   updateDownloading: "正在下載…",
   updateDownloadingPercent: "正在下載 {percent}%",

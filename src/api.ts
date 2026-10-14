@@ -1,5 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AppConfig, AppStatus, ConnectionTest, OpResult, ProfilesState, ProxySettings } from "./types";
+import type {
+  AppConfig,
+  AppStatus,
+  ConnectionTest,
+  CursorUpdate,
+  OpResult,
+  ProfilesState,
+  ProxySettings,
+} from "./types";
 
 export const getStatus = () => invoke<AppStatus>("get_status");
 export const getConfig = () => invoke<AppConfig>("get_config");
@@ -33,4 +41,6 @@ export const renameProfile = (from: string, to: string) =>
   invoke<ProfilesState>("rename_profile", { from, to });
 export const openCursor = () => invoke<string>("open_cursor");
 export const quitCursor = () => invoke<string>("quit_cursor");
+export const checkCursorUpdate = () => invoke<CursorUpdate>("check_cursor_update");
+export const openExternal = (url: string) => invoke<void>("open_external", { url });
 export const openLogFile = () => invoke<string>("open_log_file");
