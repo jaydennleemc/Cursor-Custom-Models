@@ -1,11 +1,17 @@
 /* ============================================================
- * Cursor Custom Models Runtime v1.6.16
+ * Cursor Custom Models Runtime v1.6.17
  * Injected at the end of three files (same code, separate processes):
  *   workbench.desktop.main.js / workbench.glass.main.js (renderer)
  *   extensionHostProcess.js (extension host — where HTTP actually terminates)
  * Intercepts the ConnectRPC transport and forwards Chat / Cmd+K / Agent
  * requests to the user-configured OpenAI-compatible API.
  *
+ * v1.6.17: run_terminal_cmd now always sets ShellArgs.parsing_result
+ *          (command.fullText + hasRedirects/hasCommandSubstitution). Cursor
+ *          3.24's LocalShellExecutor returns spawnError "Parsing result is
+ *          required" when the field is absent, so every agent shell call
+ *          failed instantly and models claimed the terminal was broken and
+ *          fell back to web_fetch (T48).
  * v1.6.16: Bound the tool loop with CFG.agentMaxToolRounds (default 8):
  *          once the cap is reached the next upstream call omits `tools`,
  *          so the model must answer with text (T46). Never execute a tool
@@ -875,6 +881,26 @@
       caseName: "shellToolCall",
       execCase: "shellArgs",
       argKeys: { command: "command", workingDirectory: "working_directory" },
+      // Cursor 3.24 LocalShellExecutor hard-requires ShellArgs.parsing_result:
+      // without it the client answers spawnError "Parsing result is required"
+      // before running anything. An empty parsing message with the raw command
+      // as fullText is enough (native shell-stream sends the same shape).
+      execInit: function (ArgsT, args) {
+        var pf = findFieldDeep(ArgsT, "parsingResult");
+        if (!pf || !pf.T) return null;
+        var init = { hasRedirects: false, hasCommandSubstitution: false };
+        var cf = null;
+        try {
+          cf = pf.T.fields.byMember("command")[0];
+        } catch (e) {}
+        if (cf && cf.T) {
+          init.command = new cf.T({
+            fullText: String(args.command || ""),
+            args: [],
+          });
+        }
+        return { parsingResult: new pf.T(init) };
+      },
     },
     web_fetch: {
       caseName: "fetchToolCall",
@@ -1748,6 +1774,15 @@
             var df = findFieldDeep(ArgsT, k);
             if (df.repeated && !Array.isArray(v)) v = [v];
             argsPartial[k] = v;
+          }
+        }
+        var extras = entry.execInit ? entry.execInit(ArgsT, argsObj) : null;
+        if (extras) {
+          for (var xk in extras) {
+            if (extras[xk] === undefined || extras[xk] === null) continue;
+            var xf = findFieldDeep(ArgsT, xk);
+            if (xf && argsPartial[xf.localName] === undefined)
+              argsPartial[xf.localName] = extras[xk];
           }
         }
       }
@@ -3279,7 +3314,7 @@
 
   g.__CURSOR_CM__ = {
     active: true,
-    version: "1.6.16",
+    version: "1.6.17",
     stats: stats,
     config: {
       baseUrl: CFG.baseUrl,
