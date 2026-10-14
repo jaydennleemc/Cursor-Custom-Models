@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { cx, mono } from "../ui";
 
 export function StatusLine({
@@ -5,11 +6,13 @@ export function StatusLine({
   warn,
   label,
   detail,
+  extra,
 }: {
   ok: boolean;
   warn?: boolean;
   label: string;
   detail: string;
+  extra?: ReactNode;
 }) {
   const dot = warn
     ? "bg-warn shadow-[0_0_0_4px_rgba(212,163,74,0.16)]"
@@ -22,7 +25,10 @@ export function StatusLine({
         <span className={cx("h-2 w-2 rounded-full", dot)} />
         {label}
       </span>
-      <span className={mono}>{detail}</span>
+      <span className="flex min-w-0 items-center justify-end gap-1.5">
+        <span className={mono}>{detail}</span>
+        {extra}
+      </span>
     </div>
   );
 }

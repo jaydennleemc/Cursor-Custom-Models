@@ -159,6 +159,8 @@ const en: Dict = {
   deleting: "Deleting…",
 
   updateCursor: "Update Cursor",
+  cursorSaved: "Saved to Downloads: {name}",
+  cursorDownloadFailed: "Download failed: {message}",
   updateTo: "Update to {version}",
   updateDownloading: "Downloading…",
   updateDownloadingPercent: "Downloading {percent}%",
@@ -314,6 +316,8 @@ const zhCN: Dict = {
   deleting: "删除中…",
 
   updateCursor: "更新 Cursor",
+  cursorSaved: "已保存到下载文件夹：{name}",
+  cursorDownloadFailed: "下载失败：{message}",
   updateTo: "更新到 {version}",
   updateDownloading: "正在下载…",
   updateDownloadingPercent: "正在下载 {percent}%",
@@ -469,6 +473,8 @@ const zhTW: Dict = {
   deleting: "刪除中…",
 
   updateCursor: "更新 Cursor",
+  cursorSaved: "已儲存到「下載項目」：{name}",
+  cursorDownloadFailed: "下載失敗：{message}",
   updateTo: "更新到 {version}",
   updateDownloading: "正在下載…",
   updateDownloadingPercent: "正在下載 {percent}%",

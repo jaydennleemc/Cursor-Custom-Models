@@ -42,5 +42,6 @@ export const renameProfile = (from: string, to: string) =>
 export const openCursor = () => invoke<string>("open_cursor");
 export const quitCursor = () => invoke<string>("quit_cursor");
 export const checkCursorUpdate = () => invoke<CursorUpdate>("check_cursor_update");
-export const openExternal = (url: string) => invoke<void>("open_external", { url });
+export const downloadCursorUpdate = (url: string) =>
+  invoke<string>("download_cursor_update", { url });
 export const openLogFile = () => invoke<string>("open_log_file");

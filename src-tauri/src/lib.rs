@@ -17,6 +17,7 @@ use connectivity::ConnectionTest;
 use cursor::TargetStatus;
 use serde::Serialize;
 use std::process::Command;
+use tauri::Emitter;
 #[cfg(target_os = "macos")]
 use tauri::Manager;
 
@@ -353,6 +354,29 @@ async fn check_cursor_update() -> cursor_update::CursorUpdate {
         .unwrap_or_else(|_| cursor_update::CursorUpdate::none())
 }
 
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CursorDownloadProgress {
+    received: u64,
+    total: Option<u64>,
+}
+
+#[tauri::command]
+async fn download_cursor_update(app: tauri::AppHandle, url: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        cursor_update::download_to_downloads(&url, &mut |received, total| {
+            let _ = app.emit(
+                "cursor-download-progress",
+                CursorDownloadProgress { received, total },
+            );
+        })
+        .map(|path| path.display().to_string())
+        .map_err(|err| err.to_string())
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
+
 #[tauri::command]
 fn open_external(url: String) -> Result<(), String> {
     let url = cursor_update::sanitize_download_url(&url)?;
@@ -439,6 +463,7 @@ pub fn run() {
             open_cursor,
             quit_cursor,
             check_cursor_update,
+            download_cursor_update,
             open_external,
             test_connection,
             list_profiles,

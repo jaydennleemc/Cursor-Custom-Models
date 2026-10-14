@@ -24,34 +24,60 @@ export function Rail({
       <BrandTitle version={version} update={update} t={t} />
 
       <div className={cx(card, "divide-y divide-line/70")}>
-        <StatusLine
-          ok={status.cursorFound}
-          label={t("statusCursor")}
-          detail={
-            status.cursorFound
-              ? (status.cursorVersion ?? t("statusFound"))
-              : t("statusMissing")
-          }
-        />
-        {cursorUpdate.offer?.available ? (
-          <div className="py-1.5">
-            <button
-              type="button"
-              className={cx(
-                "inline-flex w-fit cursor-pointer items-center gap-1.5 rounded-lg border border-copper/50 bg-transparent px-2.5 py-1 text-xs font-semibold text-copper-2",
-                "hover:bg-copper/10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-copper-2",
-              )}
-              onClick={() => void cursorUpdate.open()}
-            >
-              {t("updateCursor")}
-              {cursorUpdate.offer.latest ? (
-                <span className="font-mono text-[10px] font-medium">
-                  {cursorUpdate.offer.latest}
-                </span>
-              ) : null}
-            </button>
-          </div>
-        ) : null}
+        <div>
+          <StatusLine
+            ok={status.cursorFound}
+            label={t("statusCursor")}
+            detail={
+              status.cursorFound
+                ? (status.cursorVersion ?? t("statusFound"))
+                : t("statusMissing")
+            }
+            extra={
+              cursorUpdate.offer?.available ? (
+                <button
+                  type="button"
+                  className={cx(
+                    "inline-flex shrink-0 cursor-pointer items-center gap-1 rounded-md border border-copper/50 bg-transparent px-1.5 py-0.5 text-[10px] font-semibold text-copper-2",
+                    "hover:bg-copper/10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-copper-2",
+                    "disabled:cursor-default disabled:opacity-70",
+                  )}
+                  disabled={cursorUpdate.download.kind === "downloading"}
+                  aria-busy={cursorUpdate.download.kind === "downloading"}
+                  onClick={() => void cursorUpdate.startDownload()}
+                >
+                  {cursorUpdate.download.kind === "downloading" ? (
+                    <>
+                      <Spinner className="h-3 w-3" />
+                      {cursorUpdate.download.percent == null
+                        ? t("updateDownloading")
+                        : t("updateDownloadingPercent", {
+                            percent: cursorUpdate.download.percent,
+                          })}
+                    </>
+                  ) : (
+                    <>
+                      {t("updateCursor")}
+                      {cursorUpdate.offer.latest ? (
+                        <span className="font-mono font-medium">{cursorUpdate.offer.latest}</span>
+                      ) : null}
+                    </>
+                  )}
+                </button>
+              ) : null
+            }
+          />
+          {cursorUpdate.download.kind === "saved" ? (
+            <p className="m-0 pb-1 text-[11px] leading-snug text-muted">
+              {t("cursorSaved", { name: cursorUpdate.download.name })}
+            </p>
+          ) : null}
+          {cursorUpdate.download.kind === "error" ? (
+            <p className="m-0 pb-1 text-[11px] leading-snug text-warn">
+              {t("cursorDownloadFailed", { message: cursorUpdate.download.message })}
+            </p>
+          ) : null}
+        </div>
         <StatusLine
           ok={!status.cursorRunning}
           warn={status.cursorRunning}
