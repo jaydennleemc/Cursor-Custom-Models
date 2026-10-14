@@ -1,11 +1,13 @@
 use crate::error::{AppError, Result};
 use serde::Serialize;
-use std::path::Path;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const DEFAULT_UPDATE_BASE: &str = "https://api2.cursor.sh/updates";
 const DOWNLOAD_PAGE: &str = "https://cursor.com/downloads";
 const MACHINE_ID: &str = "cursor-gateway";
+const MAX_DOWNLOAD_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -136,6 +138,46 @@ pub fn parse_feed(status: u16, body: &str, current: &str) -> CursorUpdate {
     }
 }
 
+/// Save the official installer into the user's Downloads folder.
+/// The feed URL is a zip or exe on downloads.cursor.com; this does not open a browser.
+pub fn download_to_downloads(
+    raw_url: &str,
+    on_progress: &mut dyn FnMut(u64, Option<u64>),
+) -> Result<PathBuf> {
+    let filename = installer_filename(raw_url)?;
+    let url = sanitize_download_url(raw_url)?;
+    let dir = dirs::download_dir().ok_or_else(|| AppError::msg("Downloads folder was not found"))?;
+    std::fs::create_dir_all(&dir)?;
+    fetch_to_file(&url, &dir, &filename, on_progress)
+}
+
+pub fn installer_filename(raw: &str) -> Result<String> {
+    let url = sanitize_download_url(raw)?;
+    let parsed = reqwest::Url::parse(&url).map_err(|_| AppError::msg("Invalid download URL"))?;
+    let segment = parsed
+        .path_segments()
+        .and_then(|mut parts| parts.next_back())
+        .unwrap_or("");
+    if segment.is_empty()
+        || segment == "."
+        || segment == ".."
+        || !segment
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '+' | '-'))
+    {
+        return Err(AppError::msg("No direct installer link"));
+    }
+    let ext = segment
+        .rsplit('.')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if !matches!(ext.as_str(), "zip" | "dmg" | "exe") || segment.len() <= ext.len() + 1 {
+        return Err(AppError::msg("No direct installer link"));
+    }
+    Ok(segment.to_string())
+}
+
 pub fn sanitize_download_url(raw: &str) -> Result<String> {
     let url = reqwest::Url::parse(raw.trim()).map_err(|_| AppError::msg("Invalid download URL"))?;
     if url.scheme() != "https" {
@@ -260,6 +302,142 @@ fn read_product(path: &Path) -> Option<ProductMeta> {
     })
 }
 
+fn unique_download_path(dir: &Path, filename: &str) -> Result<PathBuf> {
+    let parsed = Path::new(filename);
+    let stem = parsed
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| AppError::msg("No direct installer link"))?;
+    let ext = parsed
+        .extension()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| AppError::msg("No direct installer link"))?;
+    for n in 0..100 {
+        let name = if n == 0 {
+            format!("{stem}.{ext}")
+        } else {
+            format!("{stem} {n}.{ext}")
+        };
+        let candidate = dir.join(name);
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+    Err(AppError::msg("Downloads folder already has this installer"))
+}
+
+/// `filename` is the installer name. Callers that already checked the URL may
+/// point this at a test server; `download_to_downloads` only passes a Cursor URL.
+pub fn fetch_to_file(
+    url: &str,
+    dir: &Path,
+    filename: &str,
+    on_progress: &mut dyn FnMut(u64, Option<u64>),
+) -> Result<PathBuf> {
+    let parsed = reqwest::Url::parse(url).map_err(|_| AppError::msg("Invalid download URL"))?;
+    let origin_host = parsed
+        .host_str()
+        .ok_or_else(|| AppError::msg("Invalid download URL"))?
+        .to_string();
+    let client = reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(15 * 60))
+        .redirect(reqwest::redirect::Policy::custom(move |attempt| {
+            if attempt.previous().len() >= 8 {
+                return attempt.error("too many redirects");
+            }
+            let next = attempt.url();
+            let same_host = next.host_str() == Some(origin_host.as_str());
+            let allowed = sanitize_download_url(next.as_str()).is_ok();
+            if same_host || allowed {
+                attempt.follow()
+            } else {
+                attempt.error("redirect host is not allowed")
+            }
+        }))
+        .build()
+        .map_err(|e| AppError::msg(e.to_string()))?;
+    let mut response = client
+        .get(url)
+        .header("User-Agent", "CursorGateway")
+        .send()
+        .map_err(|e| AppError::msg(e.to_string()))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(AppError::msg(format!("Download failed ({status})")));
+    }
+    if let Some(kind) = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+    {
+        if kind.to_ascii_lowercase().starts_with("text/html") {
+            return Err(AppError::msg("No direct installer link"));
+        }
+    }
+    let total = response.content_length();
+    if let Some(total) = total {
+        if total == 0 {
+            return Err(AppError::msg("Installer download was empty"));
+        }
+        if total > MAX_DOWNLOAD_BYTES {
+            return Err(AppError::msg("Installer is too large"));
+        }
+    }
+    let dest = unique_download_path(dir, filename)?;
+    let part = dest.with_extension(format!(
+        "{}.part",
+        dest.extension().and_then(|ext| ext.to_str()).unwrap_or("bin")
+    ));
+    let file = std::fs::File::create(&part)?;
+    let received = match write_capped(&mut response, file, total, on_progress) {
+        Ok(received) => received,
+        Err(error) => {
+            let _ = std::fs::remove_file(&part);
+            return Err(error);
+        }
+    };
+    if received == 0 || total.is_some_and(|expected| received != expected) {
+        let _ = std::fs::remove_file(&part);
+        return Err(AppError::msg("Installer download was incomplete"));
+    }
+    std::fs::rename(&part, &dest).map_err(|error| {
+        let _ = std::fs::remove_file(&part);
+        AppError::from(error)
+    })?;
+    Ok(dest)
+}
+
+fn write_capped(
+    reader: &mut impl Read,
+    mut file: impl Write,
+    total: Option<u64>,
+    on_progress: &mut dyn FnMut(u64, Option<u64>),
+) -> Result<u64> {
+    let mut buf = [0u8; 64 * 1024];
+    let mut received: u64 = 0;
+    let mut last_report: u64 = 0;
+    loop {
+        let n = reader.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        received += n as u64;
+        if received > MAX_DOWNLOAD_BYTES {
+            return Err(AppError::msg("Installer is too large"));
+        }
+        file.write_all(&buf[..n])?;
+        let step = total.unwrap_or(1024 * 1024) / 100;
+        let step = step.max(256 * 1024);
+        if received - last_report >= step {
+            last_report = received;
+            on_progress(received, total);
+        }
+    }
+    file.flush()?;
+    Ok(received)
+}
+
 fn fetch_feed(url: &str) -> std::result::Result<(u16, String), String> {
     let client = reqwest::blocking::Client::builder()
         .connect_timeout(Duration::from_secs(3))
@@ -369,6 +547,77 @@ mod tests {
             "3.21.16",
         );
         assert_eq!(offer.url.as_deref(), Some(DOWNLOAD_PAGE));
+    }
+
+    #[test]
+    fn installer_filename_uses_the_zip_name() {
+        let name = installer_filename(
+            "https://downloads.cursor.com/production/abc/darwin/arm64/Cursor-darwin-arm64.zip?unused=1",
+        )
+        .unwrap();
+        assert_eq!(name, "Cursor-darwin-arm64.zip");
+    }
+
+    #[test]
+    fn download_page_is_not_an_installer() {
+        let error = installer_filename(DOWNLOAD_PAGE).unwrap_err();
+        assert!(error.to_string().contains("direct installer"));
+    }
+
+    #[test]
+    fn duplicate_installer_gets_a_numbered_name() {
+        let dir = std::env::temp_dir().join(format!("ccm-name-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Cursor-darwin-arm64.zip"), b"old").unwrap();
+        let path = unique_download_path(&dir, "Cursor-darwin-arm64.zip").unwrap();
+        assert_eq!(path.file_name().unwrap(), "Cursor-darwin-arm64 1.zip");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fetch_writes_the_installer_and_skips_html() {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let port = match server.server_addr() {
+            tiny_http::ListenAddr::IP(addr) => addr.port(),
+            other => panic!("expected an ip listen address, got {other:?}"),
+        };
+        let dir = std::env::temp_dir().join(format!("ccm-fetch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::thread::spawn(move || {
+            for _ in 0..2 {
+                let request = server.recv().unwrap();
+                let path = request.url().to_string();
+                if path.contains("page") {
+                    let response = tiny_http::Response::from_string("<html></html>").with_header(
+                        tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"text/html"[..])
+                            .unwrap(),
+                    );
+                    request.respond(response).unwrap();
+                } else {
+                    let response = tiny_http::Response::from_data(b"zip-bytes".as_slice());
+                    request.respond(response).unwrap();
+                }
+            }
+        });
+        let saved = fetch_to_file(
+            &format!("http://127.0.0.1:{port}/Cursor-darwin-arm64.zip"),
+            &dir,
+            "Cursor-darwin-arm64.zip",
+            &mut |_, _| {},
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(&saved).unwrap(), b"zip-bytes");
+        assert!(saved.extension().unwrap() == "zip");
+        let html = fetch_to_file(
+            &format!("http://127.0.0.1:{port}/page"),
+            &dir,
+            "Cursor-darwin-arm64.zip",
+            &mut |_, _| {},
+        );
+        assert!(html.is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
